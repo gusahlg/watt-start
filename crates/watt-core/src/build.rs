@@ -136,6 +136,8 @@ pub fn build(
         wrapper: source.wrapper.clone(),
         jobs: settings.effective_jobs(),
         force,
+        // Players never run the golden harness; it would double the final fat-LTO link.
+        golden: false,
     };
 
     let prepared =
