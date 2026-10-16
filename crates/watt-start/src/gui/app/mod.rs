@@ -210,20 +210,15 @@ impl App {
     // watt-start` (the `tests/gui_snapshots.rs` binary that does call them is a separate
     // compilation unit).
     #[allow(dead_code)]
-    /// A demo-backed app with a placeholder forge, so rendering it never hits `forge.rs`'s
-    /// `todo!()` implementation before the `w/forge` branch lands. Used by the snapshot tests.
+    /// A demo-backed app (the real forge, like every other build). Used by the snapshot tests.
     pub(crate) fn for_snapshot_tests() -> Self {
-        let mut app = Self::with_backend(Box::new(DemoBackend::new()));
-        app.forge = ForgeBridge::placeholder();
-        app
+        Self::with_backend(Box::new(DemoBackend::new()))
     }
 
     #[allow(dead_code)]
     /// Like [`App::for_snapshot_tests`], with no instances (the welcome screen).
     pub(crate) fn for_snapshot_tests_empty() -> Self {
-        let mut app = Self::with_backend(Box::new(DemoBackend::empty()));
-        app.forge = ForgeBridge::placeholder();
-        app
+        Self::with_backend(Box::new(DemoBackend::empty()))
     }
 
     #[allow(dead_code)]
