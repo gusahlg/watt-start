@@ -26,6 +26,8 @@ const CANCEL_GRACE: Duration = Duration::from_secs(3);
 /// A running (or finished) op child.
 pub struct OpHandle {
     child: Arc<Mutex<Child>>,
+    /// The child's pid, which is also its process group id.
+    pgid: i32,
     rx: Receiver<Envelope>,
     cancelled: Arc<AtomicBool>,
 }
@@ -80,8 +82,10 @@ impl OpHandle {
             }
         });
 
+        let pgid = child.id() as i32;
         Ok(Self {
             child: Arc::new(Mutex::new(child)),
+            pgid,
             rx,
             cancelled: Arc::new(AtomicBool::new(false)),
         })
@@ -111,25 +115,38 @@ impl OpHandle {
         changed
     }
 
-    /// Kill the op's process group (SIGTERM, SIGKILL after 3 s) on a background thread.
+    /// Kill the op's process group (SIGTERM, SIGKILL after 3 s) on a background thread. The
+    /// child is only locked for an instant at a time, so [`OpHandle::running`] never waits.
     pub fn cancel(&mut self) {
+        use crate::process::{Signal, signal_group};
         self.cancelled.store(true, Ordering::SeqCst);
         let child = Arc::clone(&self.child);
+        let pgid = self.pgid;
         std::thread::spawn(move || {
-            if let Ok(mut child) = child.lock() {
-                let _ = crate::process::kill_group(&mut child, CANCEL_GRACE);
+            let exited = || {
+                child
+                    .lock()
+                    .map(|mut c| !matches!(c.try_wait(), Ok(None)))
+                    .unwrap_or(true)
+            };
+            signal_group(pgid, Signal::Term);
+            let deadline = std::time::Instant::now() + CANCEL_GRACE;
+            while !exited() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // Also when the leader exited: nothing it started may survive it.
+            signal_group(pgid, Signal::Kill);
+            if let Ok(mut c) = child.lock() {
+                let _ = c.wait();
             }
         });
     }
 
     /// Whether the child is still running.
     pub fn running(&mut self) -> bool {
-        // `try_lock`: while `cancel` holds the child to kill it, it is by definition still
-        // running, and the UI thread must never wait out the cancel's grace period.
-        match self.child.try_lock() {
+        match self.child.lock() {
             Ok(mut child) => matches!(child.try_wait(), Ok(None)),
-            Err(std::sync::TryLockError::WouldBlock) => true,
-            Err(std::sync::TryLockError::Poisoned(_)) => false,
+            Err(_) => false,
         }
     }
 }

@@ -215,13 +215,18 @@ pub fn kill_group(child: &mut Child, grace: Duration) -> Result<()> {
     Ok(())
 }
 
-enum Signal {
+/// The two signals ops are stopped with.
+#[derive(Clone, Copy, Debug)]
+pub enum Signal {
+    /// Ask politely (SIGTERM).
     Term,
+    /// Force (SIGKILL).
     Kill,
 }
 
+/// Send `signal` to the process group `pgid` (a no-op for pgid 0 or 1, and off Unix).
 #[cfg(unix)]
-fn signal_group(pgid: i32, signal: Signal) {
+pub fn signal_group(pgid: i32, signal: Signal) {
     let sig = match signal {
         Signal::Term => libc::SIGTERM,
         Signal::Kill => libc::SIGKILL,
@@ -234,8 +239,9 @@ fn signal_group(pgid: i32, signal: Signal) {
     }
 }
 
+/// Send `signal` to the process group `pgid` (a no-op for pgid 0 or 1, and off Unix).
 #[cfg(not(unix))]
-fn signal_group(_pgid: i32, _signal: Signal) {}
+pub fn signal_group(_pgid: i32, _signal: Signal) {}
 
 /// Start `command` fully detached (new session, stdin from /dev/null, stdout and stderr appended
 /// to `log`), so it outlives the launcher. Returns its pid. The child is not reaped by us: a
