@@ -358,7 +358,10 @@ fn style(animate: bool) -> forge::ForgeStyle {
 /// Build a harness for `view`/`style`, step it a few times (so placement/flash/arc animations
 /// settle into a representative frame), render it and save the PNG under
 /// `target/forge-shots/<name>.png`. Panics (failing the test) if anything in the pipeline fails.
-fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2, steps: usize) {
+/// `times` are `ctx` seconds set explicitly before each step (via `RawInput::time`), so the
+/// cube's rotation and the finish-burst age are fully deterministic rather than depending on how
+/// long each step happens to take to render in real wall-clock time.
+fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2, times: &[f64]) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/forge-shots");
     std::fs::create_dir_all(dir).expect("create target/forge-shots");
 
@@ -368,13 +371,20 @@ fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2
         .build_ui(move |ui| {
             forge::forge(ui, &view, &style);
         });
-    harness.run_steps(steps);
+    for &t in times {
+        harness.input_mut().time = Some(t);
+        harness.step();
+    }
     let image = harness.render().expect("render");
     let path = format!("{dir}/{name}.png");
     image
         .save(&path)
         .unwrap_or_else(|e| panic!("save {path}: {e}"));
 }
+
+/// A handful of steps spanning ~1.5 simulated seconds: enough rotation for the cube to read
+/// clearly as 3D without landing on an axis-aligned angle.
+const STEPS: &[f64] = &[0.0, 0.3, 0.6, 0.9, 1.2, 1.5];
 
 #[test]
 fn compile_about_45_percent() {
@@ -384,25 +394,27 @@ fn compile_about_45_percent() {
         view,
         style(true),
         egui::vec2(1100.0, 760.0),
-        6,
+        STEPS,
     );
 }
 
 #[test]
 fn link_phase() {
     let view = linking_view("snap-link");
-    snapshot("link", view, style(true), egui::vec2(1100.0, 760.0), 6);
+    snapshot("link", view, style(true), egui::vec2(1100.0, 760.0), STEPS);
 }
 
 #[test]
 fn finished_ok() {
+    // The finish burst starts on the first frame the Ok outcome is seen (t=0.0 here); render a
+    // second frame 250ms later so the spark burst and shockwave ring are caught mid-flight.
     let view = finished_ok_view("snap-ok");
     snapshot(
         "finished_ok",
         view,
         style(true),
         egui::vec2(1100.0, 760.0),
-        2,
+        &[0.0, 0.25],
     );
 }
 
@@ -414,7 +426,7 @@ fn failed_with_recovery() {
         view,
         style(true),
         egui::vec2(1100.0, 760.0),
-        6,
+        STEPS,
     );
 }
 
@@ -426,7 +438,7 @@ fn fetch_indeterminate() {
         view,
         style(true),
         egui::vec2(1100.0, 760.0),
-        6,
+        STEPS,
     );
 }
 
@@ -438,7 +450,7 @@ fn animation_off_is_static() {
         view,
         style(false),
         egui::vec2(1100.0, 760.0),
-        2,
+        &[0.0, 0.3],
     );
 }
 
@@ -450,6 +462,6 @@ fn small_size() {
         view,
         style(true),
         egui::vec2(560.0, 420.0),
-        6,
+        STEPS,
     );
 }
