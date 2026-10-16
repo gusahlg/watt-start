@@ -89,6 +89,19 @@ pub enum Binding {
     },
 }
 
+impl Binding {
+    /// The pinned revisions a managed binding currently names (`None` for an unpinned managed
+    /// binding, or a non-managed one). Part of a generation's identity alongside its environment
+    /// and PWC source: two managed generations can share both while differing only in the
+    /// engine commit, which the environment hash does not capture.
+    pub fn pin(&self) -> Option<&Pin> {
+        match self {
+            Self::Managed { pin, .. } => pin.as_ref(),
+            Self::PwcDefault | Self::Linked { .. } => None,
+        }
+    }
+}
+
 fn auto() -> String {
     AUTO.to_owned()
 }

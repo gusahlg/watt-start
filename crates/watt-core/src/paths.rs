@@ -10,6 +10,7 @@
 //! <pwc data>/watt-start/
 //!   git/<repo>.git              bare mirrors of the game, the engine and the package manager
 //!   git.lock                    held while mirrors or snapshots are modified
+//!   build.lock                  held by the launcher from `prepare` through a build's metadata
 //!   sources/v1/pwc-<g12>-<e12>/ game + engine snapshot (siblings, as Cargo needs)
 //!   sources/v1/mods-<m12>/      package manager snapshot (its mods/ is a repository)
 //!   logs/<op id>.log            one log per op
@@ -19,7 +20,9 @@
 //!   meta.lock                   held while meta.toml is read-modified-written
 //!   op.lock                     held by the op working on this instance
 //!   generations/<n>.lock        the pwc.lock of each recorded generation
-//!   game.toml                   the running game (pid, started), while it runs
+//!   generations/<n>.instance.toml the wanted mods when that generation was built
+//!   game.toml                   the running game (pid, started, log), while it runs
+//!   game.lock                   held for exactly as long as the game process runs
 //!   logs/game-<time>.log        game output
 //! ```
 //!
@@ -123,6 +126,14 @@ impl Paths {
         self.root.join("git.lock")
     }
 
+    /// `build.lock`: held by the launcher from `prepare` through the build's completion
+    /// metadata, so two launcher builds with the same inputs never race `pwc-builder`'s fixed
+    /// temporary file names. Outside `pwc`'s cache directories (which `pwc cache clean` deletes
+    /// wholesale), so it is never pulled out from under a holder.
+    pub fn build_lock(&self) -> PathBuf {
+        self.root.join("build.lock")
+    }
+
     /// `sources/v1`.
     pub fn sources(&self) -> PathBuf {
         self.root.join("sources").join("v1")
@@ -195,6 +206,14 @@ impl InstancePaths {
     /// `watt-start/game.toml`.
     pub fn running(&self) -> PathBuf {
         self.launcher().join("game.toml")
+    }
+
+    /// `watt-start/game.lock`: held for exactly as long as the game runs (see
+    /// `process::acquire_inheritable_lock`). This is the truth `status::compute` and `Play`/
+    /// `Remove` use; `game.toml` only supplies the pid/log/started for display. Not held by a
+    /// game started through the `pwc` CLI (`pwc run`): see `ARCHITECTURE.md`.
+    pub fn game_lock(&self) -> PathBuf {
+        self.launcher().join("game.lock")
     }
 
     /// `watt-start/logs/`.
