@@ -235,17 +235,18 @@ impl LineSplitter {
     }
 }
 
-/// Whether a Cargo progress line's in-flight crates mean the build is in its final link: only
-/// the generated instance crate (`pwc-game-instance`, shown as `pwc-game-instance(bin)` or
-/// `pwc-game-instance(bin "pwc-game")`) or the game library (`project_watt_cubed`) is still
-/// building, and at most one unit remains.
+/// Whether a Cargo progress line's in-flight units mean the build is in its final link: only the
+/// generated executables are left (`pwc-game(bin)`, `pwc-golden(bin)`, or the instance package
+/// `pwc-game-instance(bin)` as older Cargo prints it), at most two units remain. Both executables
+/// are linked with fat LTO, which is minutes without any visible progress. (The game library
+/// `project_watt_cubed` building alone before them is still compilation.)
 pub fn is_final_link(done: u64, total: u64, active: &[String]) -> bool {
     total > 0
-        && total.saturating_sub(done) <= 1
+        && total.saturating_sub(done) <= 2
         && !active.is_empty()
         && active.iter().all(|unit| {
             let name = unit.split('(').next().unwrap_or(unit).trim();
-            name == "pwc-game-instance" || name == "project_watt_cubed"
+            matches!(name, "pwc-game" | "pwc-golden" | "pwc-game-instance")
         })
 }
 
@@ -389,21 +390,15 @@ mod tests {
     #[test]
     fn final_link_detection() {
         let units = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        assert!(is_final_link(
-            436,
-            437,
-            &units(&["pwc-game-instance(bin \"pwc-game\")"])
-        ));
-        assert!(is_final_link(436, 437, &units(&["pwc-game-instance(bin)"])));
-        assert!(is_final_link(437, 437, &units(&["project_watt_cubed"])));
+        // What Cargo printed at the end of a real instance build.
+        assert!(is_final_link(273, 275, &units(&["pwc-game(bin)", "pwc-golden(bin)"])));
+        assert!(is_final_link(274, 275, &units(&["pwc-game(bin)"])));
+        assert!(is_final_link(436, 437, &units(&["pwc-game-instance(bin \"pwc-game\")"])));
+        assert!(!is_final_link(272, 275, &units(&["project_watt_cubed"])));
         assert!(!is_final_link(436, 437, &units(&["voxel_engine"])));
-        assert!(!is_final_link(
-            430,
-            437,
-            &units(&["pwc-game-instance(bin)"])
-        ));
+        assert!(!is_final_link(430, 437, &units(&["pwc-game(bin)"])));
         assert!(!is_final_link(436, 437, &[]));
-        assert!(!is_final_link(0, 0, &units(&["project_watt_cubed"])));
-        assert!(!is_final_link(500, 437, &units(&["x"])));
+        assert!(!is_final_link(0, 0, &units(&["pwc-game(bin)"])));
     }
+
 }
