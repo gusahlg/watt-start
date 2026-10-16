@@ -76,7 +76,12 @@ mod tests {
         assert!(FileLock::try_acquire(&path).unwrap().is_none());
         assert!(FileLock::is_held(&path));
         drop(first);
-        assert!(!FileLock::is_held(&path));
+        // Another test thread forking a child can hold a copy of the descriptor until the child
+        // execs (flock locks follow the open file description), so allow a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileLock::is_held(&path) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(FileLock::try_acquire(&path).unwrap().is_some());
     }
 }

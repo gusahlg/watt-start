@@ -218,26 +218,26 @@ fn check_nix() -> Check {
 /// Check Vulkan driver availability.
 fn check_vulkan() -> Check {
     // Check environment variables first
-    if let Ok(val) = std::env::var("VK_ICD_FILENAMES") {
-        if !val.is_empty() {
-            return Check {
-                name: "Vulkan driver".to_string(),
-                level: Level::Ok,
-                detail: val,
-                hint: String::new(),
-            };
-        }
+    if let Ok(val) = std::env::var("VK_ICD_FILENAMES")
+        && !val.is_empty()
+    {
+        return Check {
+            name: "Vulkan driver".to_string(),
+            level: Level::Ok,
+            detail: val,
+            hint: String::new(),
+        };
     }
 
-    if let Ok(val) = std::env::var("VK_DRIVER_FILES") {
-        if !val.is_empty() {
-            return Check {
-                name: "Vulkan driver".to_string(),
-                level: Level::Ok,
-                detail: val,
-                hint: String::new(),
-            };
-        }
+    if let Ok(val) = std::env::var("VK_DRIVER_FILES")
+        && !val.is_empty()
+    {
+        return Check {
+            name: "Vulkan driver".to_string(),
+            level: Level::Ok,
+            detail: val,
+            hint: String::new(),
+        };
     }
 
     // Check directories
@@ -251,17 +251,16 @@ fn check_vulkan() -> Check {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if ext == "json" {
-                        if let Some(path_str) = path.to_str() {
-                            return Check {
-                                name: "Vulkan driver".to_string(),
-                                level: Level::Ok,
-                                detail: path_str.to_string(),
-                                hint: String::new(),
-                            };
-                        }
-                    }
+                if let Some(ext) = path.extension()
+                    && ext == "json"
+                    && let Some(path_str) = path.to_str()
+                {
+                    return Check {
+                        name: "Vulkan driver".to_string(),
+                        level: Level::Ok,
+                        detail: path_str.to_string(),
+                        hint: String::new(),
+                    };
                 }
             }
         }
