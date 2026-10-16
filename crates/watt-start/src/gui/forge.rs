@@ -143,16 +143,20 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
 
     ui.vertical(|ui| {
         let avail = ui.available_rect_before_wrap();
-        // Whether the window itself (not the capped content column) is narrow: decides between a
-        // row of phase chips and a compact vertical list.
-        let narrow = avail.width() < 650.0;
-        let cube_h = (avail.height() * 0.5).clamp(160.0, 480.0);
+        // Sized from both available width and height, with a floor, so the whole column (cube,
+        // headline, bar, chips, buttons, the collapsed log header) fits without scrolling at
+        // ordinary window sizes; a very wide window doesn't get a wall-sized cube either.
+        let cube_h = (avail.width() * 0.5)
+            .min(avail.height() * 0.38)
+            .clamp(140.0, 420.0);
         // The rest of the panel (status text, chips, buttons, the collapsed log header) takes
-        // roughly this much height; centre the whole block vertically by padding above it,
-        // rather than leaving it stranded at the top with empty space below. Below the minimum
-        // supported size the content no longer fits at all; a scroll area (rather than silent
+        // roughly this much height at most; centre the whole block vertically by padding above
+        // it when there's slack, rather than leaving it stranded at the top with empty space
+        // below. Deliberately generous (rather than tight) so this never *under*-estimates and
+        // pushes the buttons off the bottom; below the minimum supported size the content no
+        // longer fits at all even with no padding, so a scroll area (rather than silent
         // clipping) keeps the buttons reachable.
-        const REST_H: f32 = 250.0;
+        const REST_H: f32 = 430.0;
         let top_pad = ((avail.height() - cube_h - REST_H) / 2.0).max(0.0);
         egui::ScrollArea::vertical()
             .id_salt("forge-scroll")
@@ -169,7 +173,7 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
                 centered_column(ui, |ui| {
                     draw_status_block(ui, view, style, now);
                     ui.add_space(10.0);
-                    draw_phase_checklist(ui, view, style, narrow);
+                    draw_phase_checklist(ui, view, style);
                     ui.add_space(12.0);
                     response = draw_buttons(ui, view, style);
                     ui.add_space(8.0);
@@ -1002,38 +1006,84 @@ fn draw_glow_bar(ui: &mut Ui, rect: Rect, fraction: f32, color: Color32, animate
 // Phase checklist
 // ---------------------------------------------------------------------------------------------
 
-fn draw_phase_checklist(ui: &mut Ui, view: &OpView, style: &ForgeStyle, narrow: bool) {
+/// Width of the painter-drawn marker in a phase chip, plus the gap before its label.
+const CHIP_MARKER_W: f32 = 14.0 + 6.0;
+/// The chip `Frame`'s margin (both sides) and stroke, added on top of marker+label width.
+const CHIP_FRAME_W: f32 = 2.0 * 8.0 + 2.0;
+/// Horizontal gap between chips sharing a row, and between wrapped rows.
+const CHIP_GAP: f32 = 6.0;
+
+/// Lay the phase chips out ourselves (rather than a single scrollable row): measure each chip's
+/// width, pack them into as many rows as needed to fit the column, and centre each row — so nothing
+/// is clipped at the edge and nothing relies on a scrollbar the user might not notice.
+fn draw_phase_checklist(ui: &mut Ui, view: &OpView, style: &ForgeStyle) {
     if view.phases.is_empty() {
         return;
     }
-    // Below a certain window width, chips in a row no longer fit; fall back to a compact
-    // vertical list rather than relying on a horizontal scrollbar the user may not notice.
-    if narrow {
-        egui::ScrollArea::vertical()
-            .id_salt("forge-phase-list")
-            .max_height(110.0)
-            .show(ui, |ui| {
-                for phase_view in &view.phases {
-                    draw_phase_chip(ui, phase_view, style);
-                }
-            });
-        return;
+    let now = ui.ctx().input(|i| i.time);
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+
+    let chips: Vec<(String, Color32, bool, f32)> = view
+        .phases
+        .iter()
+        .map(|phase_view| {
+            let (label, color, strong) = chip_text(phase_view, style, now);
+            let text_w = ui
+                .painter()
+                .layout_no_wrap(label.clone(), font_id.clone(), color)
+                .size()
+                .x;
+            let width = CHIP_MARKER_W + text_w + CHIP_FRAME_W;
+            (label, color, strong, width)
+        })
+        .collect();
+
+    let avail_w = ui.available_width();
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row: Vec<usize> = Vec::new();
+    let mut row_w = 0.0_f32;
+    for (i, &(.., width)) in chips.iter().enumerate() {
+        let added = width + if row.is_empty() { 0.0 } else { CHIP_GAP };
+        if !row.is_empty() && row_w + added > avail_w {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0.0;
+        }
+        let added = width + if row.is_empty() { 0.0 } else { CHIP_GAP };
+        row_w += added;
+        row.push(i);
     }
-    egui::ScrollArea::horizontal()
-        .id_salt("forge-phase-chips")
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for phase_view in &view.phases {
-                    draw_phase_chip(ui, phase_view, style);
-                    ui.add_space(4.0);
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    for (r, indices) in rows.iter().enumerate() {
+        if r > 0 {
+            ui.add_space(CHIP_GAP);
+        }
+        let row_width: f32 = indices.iter().map(|&i| chips[i].3).sum::<f32>()
+            + CHIP_GAP * (indices.len().saturating_sub(1)) as f32;
+        let pad = ((avail_w - row_width) / 2.0).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            for (n, &i) in indices.iter().enumerate() {
+                if n > 0 {
+                    ui.add_space(CHIP_GAP);
                 }
-            });
+                let (label, color, strong, _) = &chips[i];
+                draw_phase_chip(ui, &view.phases[i], style, now, label, *color, *strong);
+            }
         });
+    }
 }
 
-fn draw_phase_chip(ui: &mut Ui, phase_view: &watt_core::view::PhaseView, style: &ForgeStyle) {
-    let now = ui.ctx().input(|i| i.time);
-    let (label, color, strong) = match phase_view.state {
+/// The label, colour and emphasis for a phase chip (shared by measurement and drawing, so they
+/// never drift apart). Durations under a second are dropped rather than shown as "0 s".
+fn chip_text(
+    phase_view: &watt_core::view::PhaseView,
+    style: &ForgeStyle,
+    now: f64,
+) -> (String, Color32, bool) {
+    match phase_view.state {
         PhaseState::Pending => (phase_view.title.clone(), Color32::from_gray(110), false),
         PhaseState::Running => (
             phase_view.title.clone(),
@@ -1041,9 +1091,11 @@ fn draw_phase_chip(ui: &mut Ui, phase_view: &watt_core::view::PhaseView, style: 
             true,
         ),
         PhaseState::Done(outcome) => {
-            let dur = format_chip_duration(phase_view.duration_ms);
             let tag = match outcome {
-                watt_core::events::PhaseOutcome::Ok => dur,
+                watt_core::events::PhaseOutcome::Ok if phase_view.duration_ms >= 1000 => {
+                    format_chip_duration(phase_view.duration_ms)
+                }
+                watt_core::events::PhaseOutcome::Ok => String::new(),
                 watt_core::events::PhaseOutcome::Cached => "cached".to_owned(),
                 watt_core::events::PhaseOutcome::Skipped => "skipped".to_owned(),
                 watt_core::events::PhaseOutcome::Failed => String::new(),
@@ -1060,7 +1112,19 @@ fn draw_phase_chip(ui: &mut Ui, phase_view: &watt_core::view::PhaseView, style: 
             };
             (label, col, false)
         }
-    };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_phase_chip(
+    ui: &mut Ui,
+    phase_view: &watt_core::view::PhaseView,
+    style: &ForgeStyle,
+    now: f64,
+    label: &str,
+    color: Color32,
+    strong: bool,
+) {
     let text = if strong {
         egui::RichText::new(label).color(color).strong()
     } else {
@@ -1289,6 +1353,10 @@ fn draw_log_section(ui: &mut Ui, view: &OpView) {
         });
 }
 
+/// Camera scale (relative to `size`) for a single-voxel icon cube, tuned so its silhouette fills
+/// about 90% of its `size x size` box regardless of the current rotation.
+const ICON_CUBE_SCALE: f32 = 0.82;
+
 /// A small isometric cube icon (instance avatars, the logo). `busy` makes it spin and crackle.
 pub fn cube_icon(ui: &mut Ui, size: f32, color: Color32, busy: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
@@ -1302,7 +1370,7 @@ pub fn cube_icon(ui: &mut Ui, size: f32, color: Color32, busy: bool) -> Response
     let tilt: f32 = -0.3;
     let cam = Camera {
         centre: rect.center(),
-        scale: size * 0.30,
+        scale: size * ICON_CUBE_SCALE,
         focal: 4.0,
     };
     let center = P3::new(0.0, 0.0, 0.0);
@@ -1371,7 +1439,7 @@ pub fn app_icon_rgba(size: u32) -> Vec<u8> {
 
     let cam = Camera {
         centre: Pos2::new(size as f32 / 2.0, size as f32 / 2.0),
-        scale: size as f32 * 0.30,
+        scale: size as f32 * ICON_CUBE_SCALE,
         focal: 4.0,
     };
     let yaw = 0.6_f32;

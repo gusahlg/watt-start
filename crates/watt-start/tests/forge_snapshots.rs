@@ -465,3 +465,34 @@ fn small_size() {
         STEPS,
     );
 }
+
+/// `cube_icon` at the sizes it's actually called at around the app (sidebar row icons at 20,
+/// the sidebar header at 26, the welcome screen at 64) plus a small 16, on one strip, so a
+/// regression in how big the cube renders relative to its box is visible at a glance.
+#[test]
+fn cube_icon_sizes() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/forge-shots");
+    std::fs::create_dir_all(dir).expect("create target/forge-shots");
+
+    let sizes: [f32; 5] = [16.0, 20.0, 26.0, 32.0, 64.0];
+    let accent = Color32::from_rgb(230, 170, 70);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(420.0, 100.0))
+        .wgpu()
+        .build_ui(move |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(16.0);
+                for &size in &sizes {
+                    forge::cube_icon(ui, size, accent, false);
+                    ui.add_space(16.0);
+                }
+            });
+        });
+    harness.input_mut().time = Some(0.0);
+    harness.step();
+    let image = harness.render().expect("render");
+    let path = format!("{dir}/cube_icon_sizes.png");
+    image
+        .save(&path)
+        .unwrap_or_else(|e| panic!("save {path}: {e}"));
+}
