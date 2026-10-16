@@ -316,6 +316,13 @@ fn dir_size(dir: &Path) -> Result<u64> {
 /// hidden name so a half-deleted snapshot is never mistaken for a usable one.
 pub fn gc(paths: &Paths, keep: &BTreeSet<PathBuf>, dry_run: bool) -> Result<Vec<PathBuf>> {
     let _lock = FileLock::acquire(&paths.git_lock())?;
+    gc_locked(paths, keep, dry_run)
+}
+
+/// [`gc`] for a caller that already holds `paths.git_lock()` (so it can run GC and, say,
+/// `git::unpin_except` under one acquisition instead of two, with no window between them where
+/// a concurrent update could publish a reference this pass would otherwise delete).
+pub fn gc_locked(paths: &Paths, keep: &BTreeSet<PathBuf>, dry_run: bool) -> Result<Vec<PathBuf>> {
     let sources = paths.sources();
     let mut deleted = Vec::new();
     if !sources.is_dir() {
