@@ -496,3 +496,14 @@ fn cube_icon_sizes() {
         .save(&path)
         .unwrap_or_else(|e| panic!("save {path}: {e}"));
 }
+
+/// The window icon is a cube: square RGBA, transparent corners, opaque pixels in the middle.
+#[test]
+fn app_icon_is_a_cube_on_transparent_ground() {
+    let size = 64u32;
+    let rgba = forge::app_icon_rgba(size);
+    assert_eq!(rgba.len(), (size * size * 4) as usize);
+    let alpha = |x: u32, y: u32| rgba[((y * size + x) * 4 + 3) as usize];
+    assert_eq!(alpha(0, 0), 0, "corners stay transparent");
+    assert!(alpha(size / 2, size / 2) > 200, "the cube fills the centre");
+}
