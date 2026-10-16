@@ -4,6 +4,10 @@
 //! than linking against a library; the module stays self-contained (only `watt_core::` and
 //! `crate::gui::` paths), so including it this way just works.
 
+// This test compiles the whole `gui` module tree but drives only the demo backend, so the
+// real backend and the window entry point are unused here (they are used by the binary).
+#![allow(dead_code)]
+
 #[path = "../src/gui/mod.rs"]
 mod gui;
 

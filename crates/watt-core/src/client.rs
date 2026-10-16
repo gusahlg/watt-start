@@ -124,9 +124,12 @@ impl OpHandle {
 
     /// Whether the child is still running.
     pub fn running(&mut self) -> bool {
-        match self.child.lock() {
+        // `try_lock`: while `cancel` holds the child to kill it, it is by definition still
+        // running, and the UI thread must never wait out the cancel's grace period.
+        match self.child.try_lock() {
             Ok(mut child) => matches!(child.try_wait(), Ok(None)),
-            Err(_) => false,
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(_)) => false,
         }
     }
 }
