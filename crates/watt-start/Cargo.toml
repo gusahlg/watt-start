@@ -21,6 +21,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 [lints]
 workspace = true
