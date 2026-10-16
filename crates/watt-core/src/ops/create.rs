@@ -107,8 +107,16 @@ pub(super) fn run(
     if *build {
         reporter.check_cancelled()?;
         let meta = crate::meta::Meta::load(&instance.dir)?;
-        let built =
-            crate::build::build(paths, settings, &instance, &resolved, None, false, reporter)?;
+        let built = crate::build::build(
+            paths,
+            settings,
+            &instance,
+            &resolved,
+            &lock_report.lock,
+            None,
+            false,
+            reporter,
+        )?;
         common::record_generation(settings, &instance.dir, &meta.source, &built, reporter)?;
         summary.push_str(if built.cached {
             " \u{b7} built (cached)"

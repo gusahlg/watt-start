@@ -228,10 +228,28 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
     })
 }
 
+/// A generation's identity: `(environment, PWC source, binding pin)`. The environment hash alone
+/// is not enough — two managed generations can have identical game and mod revisions (so equal
+/// environments) while differing only in the engine commit, which the hash does not cover.
+pub(super) fn generation_identity(
+    environment: &str,
+    pwc_source: &Path,
+    binding: &Binding,
+) -> (String, PathBuf, Option<crate::meta::Pin>) {
+    (
+        environment.to_owned(),
+        pwc_source.to_path_buf(),
+        binding.pin().cloned(),
+    )
+}
+
 /// Record a generation after a successful build: write `generations/<id>.lock`, update the
-/// newest generation in place if it has the same environment and PWC source, else insert a new
-/// one at the front; prune beyond `settings.generations_to_keep` (keeping at least the one just
-/// written). Emits `Change::Generation`.
+/// newest generation in place if it has the same identity ([`generation_identity`]), else insert
+/// a new one at the front; prune beyond `settings.generations_to_keep` (keeping at least the one
+/// just written). The pruned generations' files are deleted only after `meta.toml` is safely
+/// committed without them (a kill in between leaves metadata that still names them, which is
+/// merely a dangling rollback target, never a generation `meta.toml` claims exists without
+/// actually recording). Emits `Change::Generation`.
 pub(super) fn record_generation(
     settings: &Settings,
     instance_dir: &Path,
@@ -243,6 +261,7 @@ pub(super) fn record_generation(
     let lock = &build_result.lock;
     let pwc_source = lock.pwc.source.clone();
     let environment = lock.environment.clone();
+    let identity = generation_identity(&environment, &pwc_source, binding);
     let packages: Vec<String> = lock
         .packages
         .iter()
@@ -256,11 +275,11 @@ pub(super) fn record_generation(
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("cannot read {}", manifest_path.display()))?;
 
+    let mut pruned: Vec<u64> = Vec::new();
     let meta = crate::meta::update(instance_dir, |meta| {
-        let reuse = meta
-            .generations
-            .first()
-            .is_some_and(|g| g.environment == environment && g.pwc_source == pwc_source);
+        let reuse = meta.generations.first().is_some_and(|g| {
+            generation_identity(&g.environment, &g.pwc_source, &g.source) == identity
+        });
         if reuse {
             let g = meta.generations.first_mut().expect("checked above");
             g.created = now_secs();
@@ -294,12 +313,17 @@ pub(super) fn record_generation(
         let keep = settings.generations_to_keep.max(1) as usize;
         while meta.generations.len() > keep {
             if let Some(old) = meta.generations.pop() {
-                let _ = std::fs::remove_file(instance_paths.generation_lock(old.id));
-                let _ = std::fs::remove_file(instance_paths.generation_manifest(old.id));
+                pruned.push(old.id);
             }
         }
         Ok(())
     })?;
+    // `meta.toml` no longer mentions these generations; only now is it safe to delete their
+    // files (a kill before this point just leaves harmless, unreferenced leftovers).
+    for id in pruned {
+        let _ = std::fs::remove_file(instance_paths.generation_lock(id));
+        let _ = std::fs::remove_file(instance_paths.generation_manifest(id));
+    }
     let id = meta.generations.first().map(|g| g.id).unwrap_or(0);
     reporter.changed(Change::Generation { id });
     Ok(id)

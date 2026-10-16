@@ -97,8 +97,16 @@ pub(super) fn run(
     if build.unwrap_or(settings.rebuild_after_update) {
         reporter.check_cancelled()?;
         let meta = crate::meta::Meta::load(&instance.dir)?;
-        let built =
-            crate::build::build(paths, settings, &instance, &resolved, None, false, reporter)?;
+        let built = crate::build::build(
+            paths,
+            settings,
+            &instance,
+            &resolved,
+            &lock_report.lock,
+            None,
+            false,
+            reporter,
+        )?;
         common::record_generation(settings, &instance.dir, &meta.source, &built, reporter)?;
         summary.push_str(if built.cached {
             " \u{b7} built (cached)"
@@ -196,6 +204,20 @@ pub(super) fn update_managed(
     let (engine_sha, engine_ref_used) = resolve_ref(&engine_mirror, engine_ref, channel)?;
     let (mods_sha, mods_ref_used) = resolve_ref(&mods_mirror, mods_ref, channel)?;
 
+    // Checking out the new snapshot and backing up worlds both assume nothing is writing to
+    // `game/` right now; a fetch (above) is harmless either way, but fail here, before any of
+    // that, when the game revision is actually about to move under a running game.
+    let game_sha_changed = old_pin.map(|p| p.game != game_sha).unwrap_or(true);
+    if do_backup
+        && game_sha_changed
+        && FileLock::is_held(&InstancePaths::new(&instance.dir).game_lock())
+    {
+        anyhow::bail!(
+            "`{}` is running; close the game first",
+            instance.manifest.name
+        );
+    }
+
     check_engine_compatibility(
         &game_mirror,
         &game_sha,
@@ -223,7 +245,6 @@ pub(super) fn update_managed(
     }
     reporter.check_cancelled()?;
 
-    let game_sha_changed = old_pin.map(|p| p.game != game_sha).unwrap_or(true);
     if do_backup && game_sha_changed && settings.backup_before_update {
         let game_dir = instance.game_dir();
         let non_empty = std::fs::read_dir(&game_dir)

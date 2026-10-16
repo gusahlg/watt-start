@@ -28,6 +28,14 @@ pub(super) fn run(
     };
 
     reporter.phase(Phase::Cleanup, false);
+
+    // Hold every instance's `op.lock` for the entire maintenance op: nothing may install a
+    // package, publish a lock, or record a pin/generation underneath the keep-sets computed
+    // below. (This only coordinates with the launcher's own ops; it cannot see a concurrent
+    // `pwc` CLI run — see ARCHITECTURE.md.) Fails fast, releasing whatever it already took, if
+    // any instance is busy.
+    let _instance_locks = lock_every_instance(paths)?;
+
     let mut summary = Vec::new();
 
     if *gc_store {
@@ -45,9 +53,6 @@ pub(super) fn run(
         ));
     }
     if *clean_cache {
-        if any_instance_busy(paths) {
-            bail!("another task is running on an instance; cache clean refused");
-        }
         let target_lock = paths.pwc.target().join(crate::build::TARGET_LOCK);
         if FileLock::is_held(&target_lock) {
             bail!("a build is using the target directory; cache clean refused");
@@ -64,14 +69,26 @@ pub(super) fn run(
     Ok(summary.join(", "))
 }
 
-fn any_instance_busy(paths: &Paths) -> bool {
+/// Take every instance's `op.lock`, or fail naming the first one already busy (dropping the
+/// `Vec` built so far releases them all, so a failed attempt leaves nothing locked).
+fn lock_every_instance(paths: &Paths) -> Result<Vec<FileLock>> {
+    let mut locks = Vec::new();
     let root = paths.pwc.instances();
     let Ok(items) = std::fs::read_dir(&root) else {
-        return false;
+        return Ok(locks);
     };
-    items
-        .flatten()
-        .any(|item| FileLock::is_held(&InstancePaths::new(item.path()).op_lock()))
+    for item in items.flatten() {
+        let dir = item.path();
+        if !dir.join("instance.toml").is_file() {
+            continue;
+        }
+        let name = item.file_name().to_string_lossy().into_owned();
+        match FileLock::try_acquire(&InstancePaths::new(&dir).op_lock())? {
+            Some(lock) => locks.push(lock),
+            None => bail!("`{name}` is busy"),
+        }
+    }
+    Ok(locks)
 }
 
 fn gc_store_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
@@ -156,7 +173,11 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
         }
     }
 
-    let removed = crate::snapshots::gc(paths, &keep_dirs, dry_run)?;
+    // One acquisition for the whole pass: snapshot deletion and unpinning share the same keep
+    // sets, so nothing that creates a new snapshot or pin may run in between (it would publish a
+    // reference these sets, computed above, do not yet know about).
+    let _git_lock = FileLock::acquire(&paths.git_lock())?;
+    let removed = crate::snapshots::gc_locked(paths, &keep_dirs, dry_run)?;
     if !dry_run {
         crate::git::unpin_except(&paths.mirror(Repo::Game), &keep_game)?;
         crate::git::unpin_except(&paths.mirror(Repo::Engine), &keep_engine)?;
