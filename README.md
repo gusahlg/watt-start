@@ -56,10 +56,16 @@ watt-start doctor                     # can this machine build and run the game?
 ## Development
 
 ```sh
-nix develop          # or any shell with Rust, git and the Wayland/Vulkan libraries
+nix develop                   # Rust, git and the Wayland/Vulkan libraries the window needs
 cargo test --workspace
 WATT_START_DEMO=1 cargo run   # the window with demo data, no builds
+cargo run                     # the real launcher (shares pwc's instances)
 ```
+
+A plain `cargo build` outside `nix develop` compiles, but on NixOS the binary cannot find the
+Wayland and Vulkan libraries when it starts. Binaries built inside the dev shell carry those
+library paths, so they also start from elsewhere until the next `nix-collect-garbage`; for a
+lasting install use `nix profile add .`.
 
 The launcher expects the package manager checked out next to it (`../pwc-package-manager`).
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works.

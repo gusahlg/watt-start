@@ -64,8 +64,17 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ rustc cargo rustfmt clippy git ];
+          packages = with pkgs; [ rustc cargo rustfmt clippy git pkg-config ];
+          buildInputs = runtimeLibs;
+          # `cargo run` and the tests' headless renderer dlopen these. The GPU driver itself comes
+          # from the system (/run/opengl-driver on NixOS).
           LD_LIBRARY_PATH = "${libraryPath}:/run/opengl-driver/lib";
+          # Bake the same paths into every binary built here, so `target/*/watt-start` also starts
+          # outside this shell (from a desktop entry, a file manager, another terminal).
+          RUSTFLAGS = "-C link-arg=-Wl,-rpath,${libraryPath}:/run/opengl-driver/lib";
+          shellHook = ''
+            echo "watt-start dev shell: cargo run (WATT_START_DEMO=1 for demo data), cargo test --workspace"
+          '';
         };
       });
 }
