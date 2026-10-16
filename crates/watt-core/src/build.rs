@@ -8,6 +8,11 @@
 //! Cargo is forced to draw its progress bar into the pipe (`CARGO_TERM_PROGRESS_WHEN=always`,
 //! `CARGO_TERM_PROGRESS_WIDTH=200`, `CARGO_TERM_COLOR=never`), set in the op process's
 //! environment so the wrapped cargo inherits it.
+//!
+//! [`build`] takes the exact `Lockfile` its caller just locked (never rereading `pwc.lock`
+//! itself, which the `pwc` CLI can rewrite concurrently), holds a launcher-wide `build.lock`
+//! across `prepare`/`compile` to serialise the launcher's own builds, and double-checks that
+//! `pwc.lock` still matches before handing anything to Cargo.
 
 use std::path::PathBuf;
 
@@ -89,16 +94,26 @@ pub struct BuildResult {
     pub golden: PathBuf,
 }
 
-/// Build the instance's current lock (which must exist and be current: callers lock first).
-/// Phases: Toolchain, (WaitForBuild), Compile, (Link), Install; Compile/Link/WaitForBuild are
+/// Build `lock` (the exact lockfile the caller just resolved — callers lock first and pass what
+/// they got; never a lock reread from disk, since another tool, including the `pwc` CLI, can
+/// relock the same instance concurrently against a different source while this runs). Phases:
+/// Toolchain, (WaitForBuild — both for the launcher-wide build lock below and, for an uncached
+/// build, the shared Cargo target lock), Compile, (Link), Install; Compile/Link/WaitForBuild are
 /// finished `Cached` or skipped when the cache answers. `force` rebuilds even when cached.
 /// `profile` overrides the instance's `[build] profile`. Uses `settings.effective_jobs()`.
 /// Emits `Change::Build`.
+///
+/// Holds `paths.build_lock()` (launcher-wide, not per instance) from just before `prepare`
+/// through `compile`'s completion metadata, so two launcher builds with identical inputs never
+/// race `pwc-builder`'s fixed temporary file names; the pre-existing per-target-directory lock
+/// probe still coordinates with the `pwc` CLI (released before `compile`, which takes it itself).
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     paths: &Paths,
     settings: &Settings,
     instance: &Instance,
     source: &ResolvedSource,
+    lock: &Lockfile,
     profile: Option<BuildProfile>,
     force: bool,
     reporter: &Reporter,
@@ -106,11 +121,6 @@ pub fn build(
     reporter.phase(Phase::Toolchain, false);
     let (rustc, target) =
         pwc_builder::rustc_info(&source.wrapper).context("cannot identify the Rust toolchain")?;
-
-    let lock = instance
-        .lockfile()
-        .context("cannot read pwc.lock")?
-        .with_context(|| format!("instance `{}` has no pwc.lock yet", instance.manifest.name))?;
 
     let pwc = PwcSource::open(&source.pwc_dir)
         .with_context(|| format!("cannot use the PWC source at {}", source.pwc_dir.display()))?;
@@ -121,7 +131,7 @@ pub fn build(
     let store_dir = paths.pwc.store();
     let store = Store::open(&store_dir)
         .with_context(|| format!("cannot open the store at {}", store_dir.display()))?;
-    let packages = pwc_instance::installed_packages(&store, &lock)
+    let packages = pwc_instance::installed_packages(&store, lock)
         .context("cannot read the locked packages from the store")?;
 
     let profile = profile.unwrap_or(instance.manifest.profile);
@@ -140,8 +150,32 @@ pub fn build(
         golden: false,
     };
 
+    let build_lock_path = paths.build_lock();
+    let _build_lock = match FileLock::try_acquire(&build_lock_path)? {
+        // Free: keep holding it (unlike the target-directory probe below, this lock is ours for
+        // the whole build, not just a presence check).
+        Some(held) => held,
+        None => {
+            reporter.phase(Phase::WaitForBuild, false);
+            let held = FileLock::acquire(&build_lock_path)?;
+            reporter.finish_phase(PhaseOutcome::Ok);
+            held
+        }
+    };
+
     let prepared =
         pwc_builder::prepare(&request, &rustc, &target).context("cannot prepare the build")?;
+
+    // Resolving the toolchain and preparing the workspace above took time during which another
+    // tool (the `pwc` CLI, most likely) could have relocked this instance: building `lock`
+    // against a `pwc.lock` that no longer matches it would record a generation nobody can trust.
+    // A cache hit needs no such check: nothing on disk is touched for it.
+    if !prepared.cached {
+        let current = instance.lockfile().context("cannot read pwc.lock")?;
+        if current.as_ref().map(|l| l.environment.as_str()) != Some(lock.environment.as_str()) {
+            anyhow::bail!("pwc.lock changed while building (another tool relocked it)");
+        }
+    }
 
     if prepared.cached {
         reporter.phase(Phase::Compile, false);
@@ -189,7 +223,7 @@ pub fn build(
 
     Ok(BuildResult {
         built,
-        lock,
+        lock: lock.clone(),
         cached: output.cached,
         golden: output.golden,
     })
