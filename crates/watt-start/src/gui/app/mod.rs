@@ -199,19 +199,7 @@ impl App {
                 .start_op(OpRequest::CheckUpdates { instance: None });
             app.startup_check = Some((op, OpView::default()));
         }
-        // Never land on "Pick an instance" when there is one to show: prefer pwc's active
-        // instance, then a favourite, then whichever sorts first (favourites-first already, so
-        // this mostly only matters when the active instance isn't also a favourite).
-        let instances = app.backend.instances();
-        let initial = instances
-            .iter()
-            .find(|e| e.card.active)
-            .or_else(|| instances.iter().find(|e| e.card.meta.favorite))
-            .or_else(|| instances.first())
-            .map(|e| e.card.name.clone());
-        if let Some(name) = initial {
-            app.main_view = Some(MainView::Instance(name));
-        }
+        app.ensure_selection();
         app
     }
 
@@ -304,12 +292,32 @@ impl App {
     }
 
     /// Draw everything. Called every frame by [`crate::gui::run`] and by the snapshot tests.
+    /// Never land on "Pick an instance" when there is one to show: prefer pwc's active instance,
+    /// then a favourite, then whichever sorts first. Runs every frame because the real backend
+    /// loads the catalog in the background, after the window opened.
+    fn ensure_selection(&mut self) {
+        if self.main_view.is_some() {
+            return;
+        }
+        let instances = self.backend.instances();
+        let initial = instances
+            .iter()
+            .find(|e| e.card.active)
+            .or_else(|| instances.iter().find(|e| e.card.meta.favorite))
+            .or_else(|| instances.first())
+            .map(|e| e.card.name.clone());
+        if let Some(name) = initial {
+            self.main_view = Some(MainView::Instance(name));
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         theme::apply(ui.ctx(), self.settings_draft.appearance.dark);
         ui.ctx()
             .set_zoom_factor(self.settings_draft.appearance.scale.max(0.5));
 
         if self.backend.tick() {
+            self.ensure_selection();
             self.sync_updates_from_backend();
         }
         self.poll_ops(ui.ctx());
