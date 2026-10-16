@@ -38,6 +38,41 @@ pub struct ForgeResponse {
     pub play: bool,
 }
 
+/// Max width of the content column below the cube: everything (status text, phase chips,
+/// buttons, the error box, the log) is centred under the cube within this width rather than
+/// stretching edge to edge or drifting to the left.
+const CONTENT_MAX_WIDTH: f32 = 640.0;
+
+/// Run `add_contents` in a column centred horizontally in `ui`, capped at [`CONTENT_MAX_WIDTH`].
+fn centered_column(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(CONTENT_MAX_WIDTH.min(ui.available_width()));
+        add_contents(ui);
+    });
+}
+
+/// Centre a row of `n` buttons horizontally, by padding before it with exactly enough space that
+/// the row's known total width lands in the middle, and shrinking each button (down to a floor)
+/// so the row never overflows the column. `ui.horizontal` always claims the full available width
+/// for its own block regardless of its content's width, so letting `vertical_centered` try to
+/// centre that block doesn't work; padding the content itself does.
+fn centered_button_row(ui: &mut Ui, n: usize, add_contents: impl FnOnce(&mut Ui, f32)) {
+    let spacing = ui.spacing().item_spacing.x;
+    let available = ui.available_width();
+    let button_w = if n == 0 {
+        PREFERRED_BUTTON_WIDTH
+    } else {
+        ((available - (n.saturating_sub(1)) as f32 * spacing) / n as f32)
+            .clamp(MIN_BUTTON_WIDTH, PREFERRED_BUTTON_WIDTH)
+    };
+    let total = n as f32 * button_w + (n.saturating_sub(1)) as f32 * spacing;
+    let pad = ((available - total) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        add_contents(ui, button_w);
+    });
+}
+
 /// How many voxels make up the cube (3x3x3).
 const N_VOXELS: usize = 27;
 /// How long a voxel's drop-in-and-bounce animation lasts.
@@ -108,6 +143,9 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
 
     ui.vertical(|ui| {
         let avail = ui.available_rect_before_wrap();
+        // Whether the window itself (not the capped content column) is narrow: decides between a
+        // row of phase chips and a compact vertical list.
+        let narrow = avail.width() < 650.0;
         let cube_h = (avail.height() * 0.5).clamp(160.0, 480.0);
         // The rest of the panel (status text, chips, buttons, the collapsed log header) takes
         // roughly this much height; centre the whole block vertically by padding above it,
@@ -127,14 +165,16 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
                     ui.allocate_exact_size(vec2(ui.available_width(), cube_h), Sense::hover());
                 draw_cube(ui, cube_rect, view, style, &state, now, finish_age);
 
-                ui.add_space(6.0);
-                draw_status_block(ui, view, style, now);
-                ui.add_space(4.0);
-                draw_phase_checklist(ui, view, style);
-                ui.add_space(6.0);
-                response = draw_buttons(ui, view);
-                ui.add_space(4.0);
-                draw_log_section(ui, view);
+                ui.add_space(10.0);
+                centered_column(ui, |ui| {
+                    draw_status_block(ui, view, style, now);
+                    ui.add_space(10.0);
+                    draw_phase_checklist(ui, view, style, narrow);
+                    ui.add_space(12.0);
+                    response = draw_buttons(ui, view, style);
+                    ui.add_space(8.0);
+                    draw_log_section(ui, view);
+                });
             });
     });
 
@@ -172,7 +212,7 @@ fn phase_base_color(phase: Option<Phase>) -> Color32 {
         Some(Phase::Lock) => Color32::from_rgb(160, 110, 240),
         Some(Phase::Toolchain | Phase::WaitForBuild) => Color32::from_rgb(130, 140, 160),
         Some(Phase::Compile) => Color32::from_rgb(255, 170, 40),
-        Some(Phase::Link) => Color32::from_rgb(255, 250, 235),
+        Some(Phase::Link) => Color32::from_rgb(255, 231, 150),
         Some(Phase::Install | Phase::Launch) => Color32::from_rgb(70, 230, 120),
         Some(Phase::Prepare | Phase::Backup | Phase::Cleanup) | None => {
             Color32::from_rgb(150, 160, 180)
@@ -189,8 +229,12 @@ fn phase_color(phase: Option<Phase>, accent: Color32, now: f64, animate: bool) -
             base.gamma_multiply(breathe)
         }
         Some(Phase::Link) if animate => {
-            let pulse = 0.88 + 0.12 * (now * TAU as f64 / 0.9).sin() as f32;
-            base.gamma_multiply(pulse)
+            // A slow pale-yellow/cyan cross-fade under the fast white-hot brightness pulse.
+            let tint_t = 0.5 + 0.5 * (now * TAU as f64 / 4.0).sin() as f32;
+            let cyan = Color32::from_rgb(185, 235, 255);
+            let tinted = base.lerp_to_gamma(cyan, tint_t * 0.22);
+            let pulse = 0.9 + 0.15 * (now * TAU as f64 / 0.9).sin() as f32;
+            tinted.gamma_multiply(pulse)
         }
         _ => base,
     }
@@ -381,6 +425,10 @@ fn draw_cube(
         let v = Vec3::new(0.35, 0.85, 0.38);
         v.normalized()
     };
+
+    if hot {
+        draw_glow_backdrop(&painter, &cam, base_color, now, style.animate);
+    }
 
     let order = voxel_order();
     // Spark burst position memory: pick a stable set of directions from the seed.
@@ -594,6 +642,34 @@ impl P3Lit {
     }
 }
 
+/// A soft glow behind the cube (a handful of concentric translucent circles, since there's no
+/// blur to reach for) for the white-hot Link phase.
+fn draw_glow_backdrop(
+    painter: &egui::Painter,
+    cam: &Camera,
+    color: Color32,
+    now: f64,
+    animate: bool,
+) {
+    let center = cam.project(P3::new(0.0, 0.0, 0.0));
+    let pulse = if animate {
+        0.85 + 0.15 * (now * TAU as f64 / 0.9).sin() as f32
+    } else {
+        1.0
+    };
+    const RINGS: usize = 5;
+    for i in (1..=RINGS).rev() {
+        let t = i as f32 / RINGS as f32;
+        let radius = cam.scale * (1.5 + t * 2.2) * pulse;
+        let alpha = (46.0 * (1.0 - t * 0.8)) as u8;
+        painter.add(egui::Shape::circle_filled(
+            center,
+            radius,
+            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+        ));
+    }
+}
+
 /// Jagged lightning arcs between random cube corners, regenerated every 70-120ms.
 fn draw_arcs(
     painter: &egui::Painter,
@@ -698,13 +774,13 @@ fn draw_sparks(
     color: Color32,
 ) {
     let mut rng = Rng::new(seed);
-    let n = 22;
+    let n = 34;
     let t = (age / SPARK_SECS as f32).clamp(0.0, 1.0);
-    let fade = (1.0 - t).powf(1.5);
+    let fade = (1.0 - t).powf(1.3);
     for _ in 0..n {
         let dir_yaw = rng.range(0.0, TAU);
         let dir_h = rng.range(-0.7, 0.7);
-        let speed = rng.range(2.0, 4.5);
+        let speed = rng.range(2.2, 5.2);
         let dist = speed * t;
         let p =
             P3::new(dist * dir_yaw.cos(), dist * dir_h, dist * dir_yaw.sin()).rotated(yaw, tilt);
@@ -713,10 +789,25 @@ fn draw_sparks(
             255,
             color.g().saturating_add(60),
             color.b(),
-            (fade * 230.0) as u8,
+            (fade * 255.0) as u8,
         );
-        painter.add(egui::Shape::circle_filled(pos, 2.2 * fade.max(0.2), c));
+        painter.add(egui::Shape::circle_filled(pos, 3.0 * fade.max(0.25), c));
     }
+
+    // A quick expanding shockwave ring, brightest right at the start.
+    let ring_model_r = 0.3 + 3.4 * t;
+    let edge = P3::new(ring_model_r, 0.0, 0.0).rotated(yaw, tilt);
+    let center2d = cam.project(P3::new(0.0, 0.0, 0.0));
+    let ring_px_r = (cam.project(edge) - center2d).length();
+    let ring_alpha = (fade * 190.0) as u8;
+    painter.add(egui::Shape::circle_stroke(
+        center2d,
+        ring_px_r,
+        Stroke::new(
+            2.0,
+            Color32::from_rgba_unmultiplied(255, 255, 255, ring_alpha),
+        ),
+    ));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -747,21 +838,34 @@ fn ellipsise(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// The big headline text: the biggest, brightest line in the panel.
+fn headline(ui: &mut Ui, text: impl Into<String>, color: Color32) {
+    ui.label(
+        egui::RichText::new(text.into())
+            .size(30.0)
+            .strong()
+            .color(color),
+    );
+}
+
 fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
     let phase = view.current;
     let phase_col = phase_color(phase, style.accent, now, style.animate);
+    let bright = Color32::from_gray(245);
 
     match &view.outcome {
         Some(watt_core::events::OpOutcome::Ok { summary }) => {
             ui.vertical_centered(|ui| {
-                ui.heading("Ready");
+                headline(ui, "Ready", Color32::from_rgb(120, 230, 150));
+                ui.add_space(4.0);
                 ui.label(summary);
             });
             return;
         }
         Some(watt_core::events::OpOutcome::Cancelled) => {
             ui.vertical_centered(|ui| {
-                ui.heading("Cancelled");
+                headline(ui, "Cancelled", Color32::from_gray(190));
+                ui.add_space(4.0);
                 ui.label("Stopped on request.");
             });
             return;
@@ -769,19 +873,14 @@ fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
         Some(watt_core::events::OpOutcome::Failed { phase, error, .. }) => {
             ui.vertical_centered(|ui| {
                 let where_ = phase.map(|p| p.title()).unwrap_or("the run");
-                ui.heading(format!("Failed in {where_}"));
+                headline(
+                    ui,
+                    format!("Failed in {where_}"),
+                    Color32::from_rgb(230, 110, 110),
+                );
             });
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical()
-                .id_salt("forge-error")
-                .max_height(90.0)
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(error.as_str()).monospace())
-                            .selectable(true)
-                            .wrap(),
-                    );
-                });
+            ui.add_space(8.0);
+            draw_error_box(ui, error);
             return;
         }
         None => {}
@@ -792,20 +891,26 @@ fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
             .op
             .map(watt_core::events::OpKind::verb)
             .unwrap_or("Working on");
-        ui.heading(format!("{verb} {}", style.title));
-        ui.colored_label(
-            phase_col,
-            phase
-                .map(|p| p.title().to_owned())
-                .or_else(|| view.phases.last().map(|p| p.title.clone()))
-                .unwrap_or_default(),
+        headline(ui, format!("{verb} {}", style.title), bright);
+        ui.add_space(3.0);
+        ui.label(
+            egui::RichText::new(
+                phase
+                    .map(|p| p.title().to_owned())
+                    .or_else(|| view.phases.last().map(|p| p.title.clone()))
+                    .unwrap_or_default(),
+            )
+            .size(16.0)
+            .color(phase_col),
         );
+        ui.add_space(2.0);
 
         let fraction = view.fraction();
         ui.label(
             egui::RichText::new(format!("{:.0}%", fraction * 100.0))
-                .size(28.0)
-                .strong(),
+                .size(22.0)
+                .strong()
+                .color(Color32::from_gray(205)),
         );
 
         let bar_rect = ui
@@ -828,19 +933,48 @@ fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
             ui.label(egui::RichText::new(LINK_LINES[idx]).italics());
         }
 
-        ui.horizontal(|ui| {
-            ui.label(format!("Elapsed {}", format_duration(view.t_ms)));
-            if let Some(expected) = style.expected_ms {
-                if fraction < 0.001 {
-                    ui.label(format!("last build took {}", format_minutes(expected)));
-                } else if fraction >= 0.05 {
-                    let estimate_total = view.t_ms as f32 / fraction;
-                    let remaining = (estimate_total - view.t_ms as f32).max(0.0) as u64;
-                    ui.label(format!("{} left", format_minutes(remaining)));
-                }
+        // A single label (rather than a row of several) so it centres correctly using its own
+        // natural width, the same way the headline above it does.
+        let mut meta = format!("Elapsed {}", format_duration(view.t_ms));
+        if let Some(expected) = style.expected_ms {
+            if fraction < 0.001 {
+                meta.push_str(&format!(
+                    "   ·   last build took {}",
+                    format_minutes(expected)
+                ));
+            } else if fraction >= 0.05 {
+                let estimate_total = view.t_ms as f32 / fraction;
+                let remaining = (estimate_total - view.t_ms as f32).max(0.0) as u64;
+                meta.push_str(&format!("   ·   {} left", format_minutes(remaining)));
             }
-        });
+        }
+        ui.label(meta);
     });
+}
+
+/// The failure error text: a framed, rounded, slightly red-tinted, scrollable monospace box.
+fn draw_error_box(ui: &mut Ui, error: &str) {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(90, 30, 30, 50))
+        .stroke(Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(220, 100, 100, 130),
+        ))
+        .corner_radius(6.0)
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical()
+                .id_salt("forge-error")
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(error).monospace())
+                            .selectable(true)
+                            .wrap(),
+                    );
+                });
+        });
 }
 
 fn draw_glow_bar(ui: &mut Ui, rect: Rect, fraction: f32, color: Color32, animate: bool, now: f64) {
@@ -868,13 +1002,13 @@ fn draw_glow_bar(ui: &mut Ui, rect: Rect, fraction: f32, color: Color32, animate
 // Phase checklist
 // ---------------------------------------------------------------------------------------------
 
-fn draw_phase_checklist(ui: &mut Ui, view: &OpView, style: &ForgeStyle) {
+fn draw_phase_checklist(ui: &mut Ui, view: &OpView, style: &ForgeStyle, narrow: bool) {
     if view.phases.is_empty() {
         return;
     }
-    // Below a certain width, chips in a row no longer fit; fall back to a compact vertical list
-    // rather than relying on a horizontal scrollbar the user may not notice.
-    if ui.available_width() < 650.0 {
+    // Below a certain window width, chips in a row no longer fit; fall back to a compact
+    // vertical list rather than relying on a horizontal scrollbar the user may not notice.
+    if narrow {
         egui::ScrollArea::vertical()
             .id_salt("forge-phase-list")
             .max_height(110.0)
@@ -901,32 +1035,30 @@ fn draw_phase_chip(ui: &mut Ui, phase_view: &watt_core::view::PhaseView, style: 
     let now = ui.ctx().input(|i| i.time);
     let (label, color, strong) = match phase_view.state {
         PhaseState::Pending => (phase_view.title.clone(), Color32::from_gray(110), false),
-        PhaseState::Running => {
-            let marker = if style.animate {
-                spinner_glyph(now)
-            } else {
-                '*'
-            };
-            (
-                format!("{marker} {}", phase_view.title),
-                phase_color(Some(phase_view.phase), style.accent, now, style.animate),
-                true,
-            )
-        }
+        PhaseState::Running => (
+            phase_view.title.clone(),
+            phase_color(Some(phase_view.phase), style.accent, now, style.animate),
+            true,
+        ),
         PhaseState::Done(outcome) => {
-            let secs = phase_view.duration_ms as f32 / 1000.0;
+            let dur = format_chip_duration(phase_view.duration_ms);
             let tag = match outcome {
-                watt_core::events::PhaseOutcome::Ok => format!("[done] {:.1}s", secs),
+                watt_core::events::PhaseOutcome::Ok => dur,
                 watt_core::events::PhaseOutcome::Cached => "cached".to_owned(),
                 watt_core::events::PhaseOutcome::Skipped => "skipped".to_owned(),
-                watt_core::events::PhaseOutcome::Failed => "[failed]".to_owned(),
+                watt_core::events::PhaseOutcome::Failed => String::new(),
             };
             let col = if outcome == watt_core::events::PhaseOutcome::Failed {
                 Color32::from_rgb(220, 90, 90)
             } else {
-                Color32::from_gray(150)
+                Color32::from_gray(190)
             };
-            (format!("{} {tag}", phase_view.title), col, false)
+            let label = if tag.is_empty() {
+                phase_view.title.clone()
+            } else {
+                format!("{} ({tag})", phase_view.title)
+            };
+            (label, col, false)
         }
     };
     let text = if strong {
@@ -935,64 +1067,193 @@ fn draw_phase_chip(ui: &mut Ui, phase_view: &watt_core::view::PhaseView, style: 
         egui::RichText::new(label).color(color)
     };
     egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::symmetric(8, 4))
-        .show(ui, |ui| ui.label(text));
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                draw_phase_marker(ui, phase_view, style, now);
+                ui.label(text);
+            });
+        });
 }
 
-fn spinner_glyph(now: f64) -> char {
-    const GLYPHS: [char; 4] = ['-', '\\', '|', '/'];
-    GLYPHS[((now * 6.0) as usize) % GLYPHS.len()]
+/// A small painter-drawn status marker for a phase chip: a hollow circle (pending), a spinning
+/// arc or pulsing dot (running), a check mark (done), an x (failed) or a short dash
+/// (cached/skipped).
+fn draw_phase_marker(
+    ui: &mut Ui,
+    phase_view: &watt_core::view::PhaseView,
+    style: &ForgeStyle,
+    now: f64,
+) {
+    let size = 14.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let center = rect.center();
+    let r = size * 0.42;
+
+    match phase_view.state {
+        PhaseState::Pending => {
+            painter.add(egui::Shape::circle_stroke(
+                center,
+                r,
+                Stroke::new(1.3, Color32::from_gray(110)),
+            ));
+        }
+        PhaseState::Running => {
+            let color = phase_color(Some(phase_view.phase), style.accent, now, style.animate);
+            if style.animate {
+                let start = (now * 3.4) as f32 % TAU;
+                let sweep = TAU * 0.72;
+                let segments = 10;
+                let mut pts = Vec::with_capacity(segments + 1);
+                for i in 0..=segments {
+                    let a = start + sweep * (i as f32 / segments as f32);
+                    pts.push(center + Vec2::new(a.cos(), a.sin()) * r);
+                }
+                painter.add(egui::Shape::line(pts, Stroke::new(1.8, color)));
+                ui.ctx().request_repaint();
+            } else {
+                painter.add(egui::Shape::circle_filled(center, r * 0.6, color));
+            }
+        }
+        PhaseState::Done(outcome) => match outcome {
+            watt_core::events::PhaseOutcome::Ok => {
+                let c = Color32::from_rgb(130, 210, 150);
+                let p0 = center + Vec2::new(-r * 0.5, 0.0);
+                let p1 = center + Vec2::new(-r * 0.05, r * 0.45);
+                let p2 = center + Vec2::new(r * 0.55, -r * 0.4);
+                painter.add(egui::Shape::line(vec![p0, p1, p2], Stroke::new(2.0, c)));
+            }
+            watt_core::events::PhaseOutcome::Failed => {
+                let c = Color32::from_rgb(220, 90, 90);
+                painter.add(egui::Shape::line_segment(
+                    [
+                        center + Vec2::new(-r * 0.5, -r * 0.5),
+                        center + Vec2::new(r * 0.5, r * 0.5),
+                    ],
+                    Stroke::new(2.0, c),
+                ));
+                painter.add(egui::Shape::line_segment(
+                    [
+                        center + Vec2::new(-r * 0.5, r * 0.5),
+                        center + Vec2::new(r * 0.5, -r * 0.5),
+                    ],
+                    Stroke::new(2.0, c),
+                ));
+            }
+            watt_core::events::PhaseOutcome::Cached | watt_core::events::PhaseOutcome::Skipped => {
+                painter.add(egui::Shape::line_segment(
+                    [
+                        center + Vec2::new(-r * 0.5, 0.0),
+                        center + Vec2::new(r * 0.5, 0.0),
+                    ],
+                    Stroke::new(1.6, Color32::from_gray(110)),
+                ));
+            }
+        },
+    }
+}
+
+/// "40 s" / "1 min 3 s".
+fn format_chip_duration(ms: u64) -> String {
+    let secs = ms / 1000;
+    if secs >= 60 {
+        format!("{} min {} s", secs / 60, secs % 60)
+    } else {
+        format!("{secs} s")
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------------------------
 
-fn draw_buttons(ui: &mut Ui, view: &OpView) -> ForgeResponse {
+/// The width every button uses when there's room: wide enough for the longest label ("Rebuild
+/// from scratch").
+const PREFERRED_BUTTON_WIDTH: f32 = 190.0;
+/// The narrowest a button is allowed to shrink to, so a long recovery row still fits the column.
+const MIN_BUTTON_WIDTH: f32 = 108.0;
+
+fn draw_buttons(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
     let mut response = ForgeResponse::default();
-    ui.horizontal(|ui| match &view.outcome {
+    ui.spacing_mut().button_padding = vec2(16.0, 8.0);
+    ui.spacing_mut().item_spacing.x = 10.0;
+
+    let can_play = matches!(
+        view.op,
+        Some(
+            watt_core::events::OpKind::Build
+                | watt_core::events::OpKind::Update
+                | watt_core::events::OpKind::Mods
+                | watt_core::events::OpKind::Create
+        )
+    );
+    let n = match &view.outcome {
+        None => 2,
+        Some(watt_core::events::OpOutcome::Ok { .. }) => usize::from(can_play) + 1,
+        Some(watt_core::events::OpOutcome::Cancelled) => 1,
+        Some(watt_core::events::OpOutcome::Failed { recovery, .. }) => recovery.len() + 1,
+    };
+
+    centered_button_row(ui, n, |ui, w| match &view.outcome {
         None => {
-            if ui.button("Cancel").clicked() {
+            if secondary_button(ui, "Cancel", w).clicked() {
                 response.cancel = true;
             }
-            if ui.button("Hide").clicked() {
+            if secondary_button(ui, "Hide", w).clicked() {
                 response.hide = true;
             }
         }
         Some(watt_core::events::OpOutcome::Ok { .. }) => {
-            if matches!(
-                view.op,
-                Some(
-                    watt_core::events::OpKind::Build
-                        | watt_core::events::OpKind::Update
-                        | watt_core::events::OpKind::Mods
-                        | watt_core::events::OpKind::Create
-                )
-            ) && ui.button("Play").clicked()
-            {
+            if can_play && primary_button(ui, "Play", style.accent, w).clicked() {
                 response.play = true;
             }
-            if ui.button("Close").clicked() {
+            if secondary_button(ui, "Close", w).clicked() {
                 response.close = true;
             }
         }
         Some(watt_core::events::OpOutcome::Cancelled) => {
-            if ui.button("Close").clicked() {
+            if secondary_button(ui, "Close", w).clicked() {
                 response.close = true;
             }
         }
         Some(watt_core::events::OpOutcome::Failed { recovery, .. }) => {
-            for r in recovery {
-                if ui.button(recovery_label(*r)).clicked() {
+            for (i, r) in recovery.iter().enumerate() {
+                let clicked = if i == 0 {
+                    primary_button(ui, recovery_label(*r), style.accent, w).clicked()
+                } else {
+                    secondary_button(ui, recovery_label(*r), w).clicked()
+                };
+                if clicked {
                     response.recovery = Some(*r);
                 }
             }
-            if ui.button("Close").clicked() {
+            if secondary_button(ui, "Close", w).clicked() {
                 response.close = true;
             }
         }
     });
     response
+}
+
+/// A secondary (neutral) button, sized with comfortable padding and a 32px minimum height.
+fn secondary_button(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
+    ui.add(egui::Button::new(label).min_size(vec2(width, 32.0)))
+}
+
+/// The primary action button: filled with the instance's accent colour.
+fn primary_button(ui: &mut Ui, label: &str, accent: Color32, width: f32) -> egui::Response {
+    let luma = 0.299 * accent.r() as f32 + 0.587 * accent.g() as f32 + 0.114 * accent.b() as f32;
+    let text_color = if luma > 150.0 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).color(text_color).strong())
+            .fill(accent)
+            .min_size(vec2(width, 32.0)),
+    )
 }
 
 fn recovery_label(r: Recovery) -> &'static str {
