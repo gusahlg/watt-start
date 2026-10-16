@@ -22,9 +22,21 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::events::{OpKind, OpOutcome, Reporter};
-use crate::paths::Paths;
+use crate::events::{Cancelled, Event, OpKind, OpOutcome, PhaseOutcome, Recovery, Reporter};
+use crate::locks::FileLock;
+use crate::meta::LastOp;
+use crate::paths::{InstancePaths, Paths, now_secs};
 use crate::settings::Settings;
+
+mod build;
+mod common;
+mod create;
+mod instance;
+mod maintenance;
+mod mods;
+mod play;
+mod rollback;
+mod update;
 
 /// Where a new instance's (or a re-bound instance's) sources come from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,8 +244,122 @@ pub fn run(
     request: &OpRequest,
     reporter: &Reporter,
 ) -> OpOutcome {
-    let _ = (paths, settings, request, reporter);
-    todo!("worker B")
+    let op = request.kind();
+    let instance_name = request.instance().map(str::to_owned);
+    reporter.emit(Event::OpStarted {
+        op,
+        instance: instance_name.clone(),
+        phases: common::planned_phases(request),
+        log: Some(paths.op_log(reporter.op_id())),
+    });
+
+    // Every instance op but `Create` takes the lock up front (`Create` creates the directory,
+    // and so the lock file, as its first step). Held for the rest of this call.
+    let pre_lock = match &instance_name {
+        Some(name) if !matches!(request, OpRequest::Create { .. }) => {
+            let lock_path = InstancePaths::new(paths.instance_dir(name)).op_lock();
+            match FileLock::try_acquire(&lock_path) {
+                Ok(Some(lock)) => Ok(Some(lock)),
+                Ok(None) => Err(format!("another task is running on `{name}`")),
+                Err(e) => Err(format!("{e:#}")),
+            }
+        }
+        _ => Ok(None),
+    };
+    let _pre_lock = match pre_lock {
+        Ok(lock) => lock,
+        Err(error) => {
+            let outcome = OpOutcome::Failed {
+                phase: None,
+                error,
+                recovery: vec![Recovery::Retry],
+            };
+            reporter.emit(Event::OpFinished {
+                outcome: outcome.clone(),
+                duration_ms: reporter.elapsed_ms(),
+            });
+            return outcome;
+        }
+    };
+
+    let result: Result<String> = match request {
+        OpRequest::Create { .. } => create::run(paths, settings, request, reporter),
+        OpRequest::Mods { .. } => mods::run(paths, settings, request, reporter),
+        OpRequest::Update { .. } => update::run(paths, settings, request, reporter),
+        OpRequest::Build { .. } => build::run(paths, settings, request, reporter),
+        OpRequest::Play { .. } => play::run(paths, settings, request, reporter),
+        OpRequest::Rollback { .. } => rollback::run(paths, settings, request, reporter),
+        OpRequest::Duplicate { .. } => instance::duplicate(paths, settings, request, reporter),
+        OpRequest::Remove { .. } => instance::remove(paths, settings, request, reporter),
+        OpRequest::SetSource { .. } => instance::set_source(paths, settings, request, reporter),
+        OpRequest::CheckUpdates { .. } => {
+            maintenance::check_updates(paths, settings, request, reporter)
+        }
+        OpRequest::Maintenance { .. } => maintenance::run(paths, settings, request, reporter),
+    };
+
+    finish(paths, instance_name.as_deref(), request, reporter, result)
+}
+
+/// Turn the op body's result into an [`OpOutcome`], close the running phase, record
+/// `meta.last_op` (unless this was a `Remove`, or there is no `instance.toml` to record it in),
+/// and emit the single `OpFinished` every op ends with.
+fn finish(
+    paths: &Paths,
+    instance_name: Option<&str>,
+    request: &OpRequest,
+    reporter: &Reporter,
+    result: Result<String>,
+) -> OpOutcome {
+    let outcome = match result {
+        Ok(summary) => {
+            reporter.finish_phase(PhaseOutcome::Ok);
+            OpOutcome::Ok { summary }
+        }
+        Err(e) if e.downcast_ref::<Cancelled>().is_some() => {
+            reporter.finish_phase(PhaseOutcome::Failed);
+            OpOutcome::Cancelled
+        }
+        Err(e) => {
+            let phase = reporter.current_phase();
+            let recovery = common::recovery_for(paths, instance_name, &e);
+            reporter.finish_phase(PhaseOutcome::Failed);
+            OpOutcome::Failed {
+                phase,
+                error: format!("{e:#}"),
+                recovery,
+            }
+        }
+    };
+
+    if let Some(name) = instance_name
+        && !matches!(request, OpRequest::Remove { .. })
+    {
+        let dir = paths.instance_dir(name);
+        if dir.join("instance.toml").is_file() {
+            let (ok, error) = match &outcome {
+                OpOutcome::Ok { .. } => (true, None),
+                OpOutcome::Cancelled => (false, Some("cancelled".to_owned())),
+                OpOutcome::Failed { error, .. } => (false, Some(error.clone())),
+            };
+            let _ = crate::meta::update(&dir, |m| {
+                m.last_op = Some(LastOp {
+                    op: request.kind(),
+                    finished: now_secs(),
+                    ok,
+                    error,
+                    log: Some(paths.op_log(reporter.op_id())),
+                });
+                Ok(())
+            });
+        }
+    }
+
+    reporter.emit(Event::OpFinished {
+        outcome: outcome.clone(),
+        duration_ms: reporter.elapsed_ms(),
+    });
+    outcome
 }
 
 /// Shared by the op implementations: the result type of one op body (its success summary).
