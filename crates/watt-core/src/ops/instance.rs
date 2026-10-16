@@ -72,9 +72,10 @@ pub(super) fn duplicate(
 
     let source_meta = crate::meta::Meta::load(&source.dir)?;
     crate::meta::update(&staging, |m| {
+        // Default to "<title> (copy)" so the two are told apart in the sidebar.
         m.display_name = display_name
             .clone()
-            .or_else(|| source_meta.display_name.clone());
+            .or_else(|| Some(format!("{} (copy)", source_meta.title(name))));
         m.color = source_meta.color.clone();
         m.group = source_meta.group.clone();
         m.created = Some(now_secs());
