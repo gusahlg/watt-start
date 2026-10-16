@@ -240,14 +240,28 @@ fn play_launches_detached_with_the_right_environment_and_refuses_while_running()
     let game_toml = InstancePaths::new(&card.dir).running();
     assert!(game_toml.is_file());
 
-    // The game is still "running" (it sleeps for a few seconds): a second Play refuses.
+    // `game.lock` (not `game.toml`) is the truth: held for as long as the game runs, and that is
+    // what `status::compute` and a second `Play`/`Remove` go by.
+    assert!(FileLock::is_held(
+        &InstancePaths::new(&card.dir).game_lock()
+    ));
+    let running = status::compute(&world.paths, &card).unwrap().running;
+    assert!(running.is_some(), "status should report the game running");
+
+    // The game is still running (it sleeps for a few seconds): a second Play, and Remove, refuse.
     let (outcome, _sink) = world.run(&OpRequest::Play {
         instance: "survival".to_owned(),
         last_good: false,
         args: vec![],
     });
     let (error, _) = assert_failed(&outcome);
-    assert!(error.unwrap().contains("already running"), "{error:?}");
+    assert!(error.unwrap().contains("is running"), "{error:?}");
+
+    let (outcome, _sink) = world.run(&OpRequest::Remove {
+        instance: "survival".to_owned(),
+    });
+    let (error, _) = assert_failed(&outcome);
+    assert!(error.unwrap().contains("is running"), "{error:?}");
 }
 
 #[test]
@@ -556,4 +570,261 @@ fn update_managed_instance_moves_the_pin() {
     });
     let summary = assert_ok(&outcome);
     assert!(summary.contains("Already up to date"), "{summary}");
+}
+
+#[test]
+fn status_reports_needs_build_when_only_the_engine_changed() {
+    let mut world = World::new();
+    let remotes = world.add_managed_remotes();
+    assert_ok(&create(&world, "main", managed("main"), &[], true));
+    let before = catalog::load_instance(&world.paths, "main").unwrap();
+    assert!(matches!(
+        status::compute(&world.paths, &before).unwrap().readiness,
+        Readiness::Ready { .. }
+    ));
+
+    // Move only the engine forward; the game and mods stay put, so the environment hash (which
+    // never covers the engine) is unchanged.
+    std::fs::write(remotes.engine.join("CHANGED"), "x").unwrap();
+    support::commit_all(&remotes.engine, "engine: a change");
+    let (outcome, _sink) = world.run(&OpRequest::Update {
+        instance: "main".to_owned(),
+        build: Some(false),
+        reset_lock: false,
+    });
+    assert_ok(&outcome);
+
+    let after = catalog::load_instance(&world.paths, "main").unwrap();
+    match status::compute(&world.paths, &after).unwrap().readiness {
+        Readiness::NeedsBuild { reason } => {
+            assert!(reason.contains("engine"), "{reason}");
+        }
+        other => panic!("expected NeedsBuild, got {other:?}"),
+    }
+}
+
+#[test]
+fn set_source_leaves_the_old_binding_intact_on_a_nonexistent_channel() {
+    let mut world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        false,
+    ));
+    let _remotes = world.add_managed_remotes();
+
+    let (outcome, _sink) = world.run(&OpRequest::SetSource {
+        instance: "survival".to_owned(),
+        source: managed("no-such-branch"),
+        build: Some(false),
+    });
+    assert_failed(&outcome);
+
+    let card = catalog::load_instance(&world.paths, "survival").unwrap();
+    assert_eq!(card.meta.source, watt_core::meta::Binding::PwcDefault);
+}
+
+#[test]
+fn duplicate_refuses_an_existing_destination_and_leaves_no_staging_dir() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "a",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        false,
+    ));
+    assert_ok(&create(
+        &world,
+        "b",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        false,
+    ));
+
+    let (outcome, _sink) = world.run(&OpRequest::Duplicate {
+        instance: "a".to_owned(),
+        new_name: "b".to_owned(),
+        display_name: None,
+        with_worlds: false,
+    });
+    let (error, _) = assert_failed(&outcome);
+    assert!(error.unwrap().contains("already exists"), "{error:?}");
+
+    let leftovers: Vec<_> = std::fs::read_dir(world.paths.pwc.instances())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-dup-"))
+        .collect();
+    assert!(leftovers.is_empty(), "staging directory left behind");
+    // `b` itself is untouched.
+    assert_eq!(
+        catalog::load_instance(&world.paths, "b")
+            .unwrap()
+            .packages
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn duplicate_refuses_to_copy_worlds_while_the_source_is_running() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        true,
+    ));
+    assert_ok(
+        &world
+            .run(&OpRequest::Play {
+                instance: "survival".to_owned(),
+                last_good: false,
+                args: vec![],
+            })
+            .0,
+    );
+
+    let (outcome, _sink) = world.run(&OpRequest::Duplicate {
+        instance: "survival".to_owned(),
+        new_name: "copy".to_owned(),
+        display_name: None,
+        with_worlds: true,
+    });
+    let (error, _) = assert_failed(&outcome);
+    assert!(error.unwrap().contains("is running"), "{error:?}");
+}
+
+#[test]
+fn maintenance_refuses_while_an_instance_is_busy() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        false,
+    ));
+    let card = catalog::load_instance(&world.paths, "survival").unwrap();
+    let _held = FileLock::acquire(&InstancePaths::new(&card.dir).op_lock()).unwrap();
+
+    let (outcome, _sink) = world.run(&OpRequest::Maintenance {
+        clean_cache: false,
+        gc_snapshots: false,
+        gc_store: true,
+        dry_run: true,
+    });
+    let (error, _) = assert_failed(&outcome);
+    assert!(error.unwrap().contains("is busy"), "{error:?}");
+}
+
+#[test]
+fn rollback_relocks_when_a_generations_package_is_missing_from_the_store() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        true,
+    ));
+    let card = catalog::load_instance(&world.paths, "survival").unwrap();
+    let gen1 = card.meta.generations[0].id;
+    let gen1_lock =
+        pwc_manifest::Lockfile::from_file(&InstancePaths::new(&card.dir).generation_lock(gen1))
+            .unwrap();
+    let hash = gen1_lock.packages[0].hash.clone();
+
+    world.add_package("pwc.inventory", "1.0.0", &[]);
+    assert_ok(
+        &world
+            .run(&OpRequest::Mods {
+                instance: "survival".to_owned(),
+                add: vec!["pwc.inventory".to_owned()],
+                remove: vec!["pwc.hotbar".to_owned()],
+                build: Some(true),
+            })
+            .0,
+    );
+
+    // Simulate the package store losing generation 1's package externally (e.g. a concurrent
+    // `pwc store gc` that did not know about this generation).
+    let store = pwc_store::Store::open(world.paths.pwc.store()).unwrap();
+    assert!(store.remove(&hash).unwrap());
+
+    let (outcome, _sink) = world.run(&OpRequest::Rollback {
+        instance: "survival".to_owned(),
+        generation: Some(gen1),
+    });
+    let summary = assert_ok(&outcome);
+    assert!(summary.contains(&gen1.to_string()), "{summary}");
+
+    let rolled_back = catalog::load_instance(&world.paths, "survival").unwrap();
+    assert_eq!(rolled_back.packages.len(), 1);
+    assert_eq!(rolled_back.packages[0].id, "pwc.hotbar");
+}
+
+#[test]
+fn build_fails_when_pwc_lock_changed_underneath_it() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar"],
+        false,
+    ));
+
+    let card = catalog::load_instance(&world.paths, "survival").unwrap();
+    let instance = pwc_instance::Instance::open(
+        &world.paths.pwc,
+        &pwc_manifest::InstanceName::parse("survival").unwrap(),
+    )
+    .unwrap();
+    let resolved =
+        watt_core::binding::resolve(&world.paths, &world.settings, &card.meta.source).unwrap();
+    // The lock as it stood right after locking, kept around like a caller that locked once and
+    // is about to build — meanwhile another tool relocks the instance (simulated below).
+    let stale_lock = instance.lockfile().unwrap().unwrap();
+
+    world.add_package("pwc.inventory", "1.0.0", &[]);
+    assert_ok(
+        &world
+            .run(&OpRequest::Mods {
+                instance: "survival".to_owned(),
+                add: vec!["pwc.inventory".to_owned()],
+                remove: vec![],
+                build: Some(false),
+            })
+            .0,
+    );
+
+    let sink = std::sync::Arc::new(watt_core::events::VecSink::default());
+    let reporter =
+        watt_core::events::Reporter::new(sink, "t", watt_core::events::CancelToken::default());
+    let err = watt_core::build::build(
+        &world.paths,
+        &world.settings,
+        &instance,
+        &resolved,
+        &stale_lock,
+        None,
+        false,
+        &reporter,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("pwc.lock changed while building"),
+        "{err:#}"
+    );
 }

@@ -75,12 +75,45 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
 
 - One op per instance (`op.lock`); different instances can run ops at once. Builds serialise on
   pwc's target-directory lock; an op waiting for it shows a "Waiting for another build" phase.
-- `git.lock` serialises mirror and snapshot changes across launchers and ops.
+  The launcher additionally holds its own `build.lock` (launcher-wide, not per instance) from
+  just before `pwc-builder::prepare` through `compile`'s completion metadata, so two launcher
+  builds with identical inputs never race `pwc-builder`'s fixed temporary file names; the
+  target-directory lock remains the mechanism that coordinates with the `pwc` CLI (it is released
+  before `compile`, which takes it itself).
+- `git.lock` serialises mirror and snapshot changes across launchers and ops. Snapshot garbage
+  collection and unpinning run under one `git.lock` acquisition (`snapshots::gc_locked` +
+  `git::unpin_except`), so nothing can publish a new snapshot or pin in the gap between them.
+- `Maintenance` additionally takes every instance's `op.lock` (`try_acquire`, failing fast with
+  "`<name>` is busy" if any is held) and holds them all for the whole op, so no concurrent
+  launcher op can install a package or publish a lock/pin/generation underneath the keep-sets
+  garbage collection computes. `clean_cache` also refuses while the target-directory lock is held.
+- A build takes the exact `Lockfile` its caller just locked, never rereading `pwc.lock` from disk
+  itself (another tool could have rewritten it in between); it still double-checks, right before
+  compiling, that `pwc.lock` on disk still matches, failing ("pwc.lock changed while building")
+  rather than recording a generation nobody can trust.
+- `game.lock` (`watt-start/game.lock`, inside each instance) is held for exactly as long as a
+  game launched by `Play` runs: acquired before launching, made inheritable
+  (`FD_CLOEXEC` cleared) and then released by the launcher itself — the detached game's own
+  inherited copy of the descriptor is what keeps the `flock` held, following it past the
+  launcher's own exit or a crash. `status::compute`, `Play` and `Remove` (and the world-copying
+  parts of `Update` and `Duplicate`) treat this lock, not `watt-start/game.toml` (which only
+  records the pid/log/started for display), as the truth that a game is running.
+- `Duplicate` builds its copy in a hidden `instances/.tmp-dup-<name>-<pid>` staging directory and
+  publishes it with one atomic rename, refusing if the destination already exists; a kill
+  partway through leaves only the staging directory, which the next `Duplicate` cleans up.
 - Locks are `flock`s: a killed op releases them.
 - Every file is written atomically, in an order that is consistent at every point: sources exist
   before anything points at them; `pwc.lock` is written before the binding it was made from (a lock
   newer than its binding is drift, repaired by the next op); a generation is recorded only after
-  its build finished.
+  its build finished and `meta.toml` is committed before any file belonging to a generation it
+  prunes is deleted; `SetSource` and `Rollback` commit the binding itself last, once every source,
+  `instance.toml` and `pwc.lock` it depends on already exists — a nonexistent channel, or a kill
+  partway through, leaves the previous (still working) binding in place.
+- A generation's identity for rollback/recording purposes is `(environment, PWC source, binding
+  pin)`, not the environment hash alone: two managed generations can have identical game and mod
+  revisions (so equal environments) while differing only in the engine commit, which the
+  environment hash does not cover. `status::compute` reports `NeedsBuild` ("the engine changed
+  since the last build") in exactly that case, instead of incorrectly `Ready`.
 
 ## Interplay with the `pwc` CLI
 
@@ -90,6 +123,14 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   collected relocks from its snapshot. The launcher's own maintenance also keeps generation locks.
 - `pwc cache clean` removes builds; generations whose executable is gone are not offered to play.
 - `pwc instance remove` removes the launcher metadata with the instance.
+- A game started with `pwc run` holds no `game.lock`: the launcher has no way to see it running,
+  so `status::compute`, `Play` and `Remove` cannot detect or refuse against it. Only games started
+  through the launcher's own `Play` are covered.
+- `Maintenance`'s instance-lock and `git.lock` coordination (above) only serialises against the
+  launcher's own ops; it has no way to hold off a concurrent `pwc store gc`, `pwc cache clean` or a
+  CLI build. Racing one of those against launcher maintenance is not prevented — the existing
+  defenses (atomic installs/renames, `pwc-builder`'s own target lock, relocking on drift) limit
+  the damage, but do not eliminate the window.
 
 ## Open ends
 

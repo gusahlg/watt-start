@@ -15,9 +15,6 @@ use watt_core::settings::Settings;
 /// The local "remote" git checkouts a managed instance's mirrors are fetched from.
 pub struct ManagedRemotes {
     pub game: PathBuf,
-    /// Kept so the checkout stays alive on disk for the whole test (nothing reads it back; the
-    /// engine mirror is addressed through `settings.remotes` instead).
-    #[allow(dead_code)]
     pub engine: PathBuf,
     pub mods: PathBuf,
 }
