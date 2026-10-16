@@ -14,14 +14,55 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::events::Reporter;
 
 /// The running stderr capture. Dropping it restores the original stderr and joins the reader
 /// after draining what is left.
+#[cfg(unix)]
+pub struct StderrCapture {
+    /// A duplicate of the original fd 2, restored on drop.
+    original: i32,
+    /// Signalled by the reader thread right before it returns.
+    done: std::sync::mpsc::Receiver<()>,
+    /// Joined once `done` fires; dropped (detached) if the reader is still stuck reading.
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// No-op capture for non-Unix targets.
+#[cfg(not(unix))]
 pub struct StderrCapture {
     _private: (),
+}
+
+#[cfg(unix)]
+impl Drop for StderrCapture {
+    fn drop(&mut self) {
+        use std::io::Write as _;
+        let _ = std::io::stderr().flush();
+        // SAFETY: `self.original` is a fd this capture owns exclusively (a `dup` of fd 2 made in
+        // `capture_stderr`). `dup2` makes fd 2 refer to it again, closing whatever fd 2 currently
+        // holds (our end of the pipe) first; `close` then releases our now-unneeded duplicate.
+        unsafe {
+            libc::dup2(self.original, 2);
+            libc::close(self.original);
+        }
+        // The pipe's write end is now fully closed on our side, so the reader thread should see
+        // EOF shortly — unless a grandchild process (started behind a wrapper) inherited the pipe
+        // and still holds it open. Never let that block the op indefinitely: wait briefly, then
+        // detach (drop the `JoinHandle` without joining; the thread finishes on its own later).
+        if self.done.recv_timeout(Duration::from_secs(2)).is_ok()
+            && let Some(handle) = self.handle.take()
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for StderrCapture {
+    fn drop(&mut self) {}
 }
 
 /// Replace fd 2 with a pipe whose lines become events on `reporter`; every raw line is also
@@ -29,9 +70,117 @@ pub struct StderrCapture {
 /// phase; when `progress::is_final_link` says so and the current phase is `Compile`, the reader
 /// switches the reporter to `Phase::Link`. Unix only (on other platforms: a no-op that returns a
 /// capture doing nothing).
+#[cfg(unix)]
+pub fn capture_stderr(reporter: Reporter, log: Option<std::fs::File>) -> Result<StderrCapture> {
+    use std::io::Write as _;
+
+    // Flush whatever Rust's own buffered stderr writer still holds before fd 2 changes meaning.
+    let _ = std::io::stderr().flush();
+
+    let mut fds = [0i32; 2];
+    // SAFETY: `pipe(2)` only fills `fds` with two freshly allocated descriptors; the buffer is a
+    // valid, correctly sized `&mut [i32; 2]`.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot create a pipe");
+    }
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+
+    // SAFETY: `dup(2)` duplicates the currently valid fd 2; the result is a new fd this function
+    // owns until it is handed to the capture (which closes it on drop).
+    let original = unsafe { libc::dup(2) };
+    if original < 0 {
+        let err = std::io::Error::last_os_error();
+        // SAFETY: both fds were just created above by this function and are not used elsewhere.
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        return Err(err).context("cannot duplicate stderr");
+    }
+
+    // SAFETY: `dup2(write_fd, 2)` makes fd 2 an alias of `write_fd` (closing fd 2's previous
+    // target first); both fds are valid and owned by this process.
+    if unsafe { libc::dup2(write_fd, 2) } < 0 {
+        let err = std::io::Error::last_os_error();
+        // SAFETY: all three fds were created by this function and are not used elsewhere yet.
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+            libc::close(original);
+        }
+        return Err(err).context("cannot redirect stderr");
+    }
+    // fd 2 now refers to the same pipe as `write_fd`; our separate handle to it is no longer
+    // needed (closing it does not close fd 2, which holds its own reference to the same pipe).
+    // SAFETY: `write_fd` was duplicated by `dup2` above and is not used anywhere else.
+    unsafe { libc::close(write_fd) };
+
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let log = std::sync::Mutex::new(log);
+    let thread_reporter = reporter.clone();
+    let handle = std::thread::spawn(move || {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: `read_fd` was created by `pipe(2)` above, is not closed anywhere else, and is
+        // handed to this thread exclusively; wrapping it in a `File` gives it an owning drop.
+        let mut pipe = unsafe { std::fs::File::from_raw_fd(read_fd) };
+        let mut splitter = crate::progress::LineSplitter::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            use std::io::Read as _;
+            match pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for line in splitter.feed(&buf[..n]) {
+                        handle_line(&thread_reporter, &log, &line);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        if let Some(line) = splitter.finish() {
+            handle_line(&thread_reporter, &log, &line);
+        }
+        let _ = tx.send(());
+    });
+
+    Ok(StderrCapture {
+        original,
+        done: rx,
+        handle: Some(handle),
+    })
+}
+
+/// One captured line: append it to the log (when given) and turn it into an event. The reader
+/// must never itself write to stderr (it would feed its own pipe).
+#[cfg(unix)]
+fn handle_line(reporter: &Reporter, log: &std::sync::Mutex<Option<std::fs::File>>, line: &str) {
+    use std::io::Write as _;
+    if let Some(file) = log.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        let _ = writeln!(file, "{line}");
+    }
+    match crate::progress::parse_cargo_line(line) {
+        crate::progress::CargoLine::Progress {
+            done,
+            total,
+            active,
+        } => {
+            if reporter.current_phase() == Some(crate::events::Phase::Compile)
+                && crate::progress::is_final_link(done, total, &active)
+            {
+                reporter.phase(crate::events::Phase::Link, false);
+            }
+            reporter.progress(done, Some(total), active.join(", "));
+        }
+        _ => reporter.tool_log(line.to_owned()),
+    }
+}
+
+/// No-op on non-Unix targets.
+#[cfg(not(unix))]
 pub fn capture_stderr(reporter: Reporter, log: Option<std::fs::File>) -> Result<StderrCapture> {
     let _ = (reporter, log);
-    todo!("worker B")
+    Ok(StderrCapture { _private: () })
 }
 
 /// Configure `command` to start in a new process group of its own (pgid = its pid).
