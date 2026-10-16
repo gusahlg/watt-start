@@ -150,13 +150,15 @@ impl App {
         let accent = theme::accent_for_meta(&entry.card.name, entry.card.meta.color.as_deref());
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 ui.label(theme::heading(entry.card.meta.title(&entry.card.name)));
+                // A short underline under the title (not a full-width bar, which reads too much
+                // like a divider or progress line) is enough of an accent cue.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 2.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 1u8, accent);
                 ui.label(theme::muted(entry.card.dir.display().to_string()));
             });
         });
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 2u8, accent);
         ui.add_space(8.0);
 
         ui.horizontal_wrapped(|ui| {

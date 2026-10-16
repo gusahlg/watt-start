@@ -199,8 +199,18 @@ impl App {
                 .start_op(OpRequest::CheckUpdates { instance: None });
             app.startup_check = Some((op, OpView::default()));
         }
-        if let Some(first) = app.backend.instances().first() {
-            app.main_view = Some(MainView::Instance(first.card.name.clone()));
+        // Never land on "Pick an instance" when there is one to show: prefer pwc's active
+        // instance, then a favourite, then whichever sorts first (favourites-first already, so
+        // this mostly only matters when the active instance isn't also a favourite).
+        let instances = app.backend.instances();
+        let initial = instances
+            .iter()
+            .find(|e| e.card.active)
+            .or_else(|| instances.iter().find(|e| e.card.meta.favorite))
+            .or_else(|| instances.first())
+            .map(|e| e.card.name.clone());
+        if let Some(name) = initial {
+            app.main_view = Some(MainView::Instance(name));
         }
         app
     }

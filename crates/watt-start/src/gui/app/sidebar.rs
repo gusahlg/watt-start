@@ -169,12 +169,15 @@ fn status_badge(ui: &mut egui::Ui, entry: &InstanceEntry, updates: usize) {
         } else {
             format!("{updates} updates")
         };
+        // A small, quiet pill: a cyan outline rather than a bright fill, so it reads as a status
+        // next to the readiness dots rather than shouting over the row.
         egui::Frame::new()
-            .fill(theme::CYAN)
+            .fill(theme::BG_2)
+            .stroke(egui::Stroke::new(1.0, theme::CYAN))
             .corner_radius(255u8)
-            .inner_margin(egui::Margin::symmetric(7, 2))
+            .inner_margin(egui::Margin::symmetric(6, 1))
             .show(ui, |ui| {
-                ui.colored_label(egui::Color32::from_rgb(0x08, 0x1a, 0x1a), label);
+                ui.label(egui::RichText::new(label).color(theme::CYAN).size(11.0));
             });
     } else {
         let color = match &entry.status.readiness {
