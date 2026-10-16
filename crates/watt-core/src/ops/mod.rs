@@ -256,6 +256,14 @@ pub fn run(
     // Every instance op but `Create` takes the lock up front (`Create` creates the directory,
     // and so the lock file, as its first step). Held for the rest of this call.
     let pre_lock = match &instance_name {
+        // Taking the lock creates `watt-start/`, so never do it for an instance that does not
+        // exist: a typo must not leave a ghost directory behind.
+        Some(name)
+            if !matches!(request, OpRequest::Create { .. })
+                && !paths.instance_dir(name).join("instance.toml").is_file() =>
+        {
+            Err(format!("there is no instance named `{name}`"))
+        }
         Some(name) if !matches!(request, OpRequest::Create { .. }) => {
             let lock_path = InstancePaths::new(paths.instance_dir(name)).op_lock();
             match FileLock::try_acquire(&lock_path) {
