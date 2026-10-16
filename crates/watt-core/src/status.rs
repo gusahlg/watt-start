@@ -14,7 +14,6 @@ use crate::catalog::InstanceCard;
 use crate::locks::FileLock;
 use crate::meta::{Binding, Generation};
 use crate::paths::{InstancePaths, Paths};
-use crate::process;
 use crate::settings::Settings;
 
 /// The state of an instance.
@@ -52,18 +51,22 @@ pub enum Readiness {
     },
 }
 
-/// `watt-start/game.toml`.
+/// `watt-start/game.toml`: `game.lock` (see `process::acquire_inheritable_lock`) is the truth
+/// that a game is running; this only supplies the pid for display once it is.
 #[derive(Deserialize)]
 struct RunningGame {
     pid: u32,
 }
 
 /// Compute an instance's status. `NeedsBuild` when: the lock's environment differs from the
-/// newest generation with a build; the lock's `[pwc].source` differs from what the binding
-/// resolves to (drift after a `pwc` CLI relock, or an unpinned managed instance); the binding is
-/// linked/pwc-default and the checkout's HEAD or dirty state moved since that build; or the
-/// generation's executable is gone. `Broken` when the binding cannot be resolved (missing
-/// checkout). The running game comes from `watt-start/game.toml` plus `process::is_alive`.
+/// newest generation with a build; the newest built generation's binding pin differs from the
+/// current (managed) binding's pin, even with an unchanged environment (an engine-only update:
+/// the environment hash does not cover the engine); the lock's `[pwc].source` differs from what
+/// the binding resolves to (drift after a `pwc` CLI relock, or an unpinned managed instance); the
+/// binding is linked/pwc-default and the checkout's HEAD or dirty state moved since that build;
+/// or the generation's executable is gone. `Broken` when the binding cannot be resolved (missing
+/// checkout). The running game comes from `watt-start/game.lock`, the truth, with the pid read
+/// from `watt-start/game.toml` for display.
 pub fn compute(paths: &Paths, card: &InstanceCard) -> Result<InstanceStatus> {
     let instance_paths = InstancePaths::new(&card.dir);
     let busy = FileLock::is_held(&instance_paths.op_lock());
@@ -145,6 +148,15 @@ fn readiness_for_locked(
                     reason: "mods changed since the last build".to_owned(),
                 };
             }
+            // The environment hash does not cover the engine commit: a managed update that only
+            // moved the engine pin leaves the environment (and so the check above) unchanged.
+            if generation.source.pin().map(|p| &p.engine)
+                != card.meta.source.pin().map(|p| &p.engine)
+            {
+                return Readiness::NeedsBuild {
+                    reason: "the engine changed since the last build".to_owned(),
+                };
+            }
             match &generation.build {
                 None => Readiness::NeedsBuild {
                     reason: "not built yet".to_owned(),
@@ -160,9 +172,20 @@ fn readiness_for_locked(
     }
 }
 
+/// `watt-start/game.lock` is the truth that a game is running (see
+/// `process::acquire_inheritable_lock`); `game.toml` only supplies the pid to show, when the
+/// lock says something is actually running. A held lock whose `game.toml` cannot be read (or is
+/// stale from a format this launcher wrote before `game.lock` existed) still reports a running
+/// game, with pid `0`, rather than silently claiming nothing is running.
 fn running_pid(instance_dir: &Path) -> Option<u32> {
-    let path = InstancePaths::new(instance_dir).running();
-    let text = std::fs::read_to_string(path).ok()?;
-    let running: RunningGame = toml::from_str(&text).ok()?;
-    process::is_alive(running.pid).then_some(running.pid)
+    let instance_paths = InstancePaths::new(instance_dir);
+    if !FileLock::is_held(&instance_paths.game_lock()) {
+        return None;
+    }
+    let pid = std::fs::read_to_string(instance_paths.running())
+        .ok()
+        .and_then(|text| toml::from_str::<RunningGame>(&text).ok())
+        .map(|r| r.pid)
+        .unwrap_or(0);
+    Some(pid)
 }

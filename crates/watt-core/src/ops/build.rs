@@ -34,7 +34,7 @@ pub(super) fn run(
     let resolved = ensure_sources(paths, settings, &meta, reporter)?;
 
     reporter.phase(Phase::Lock, false);
-    crate::build::lock(
+    let lock_report = crate::build::lock(
         paths,
         &instance,
         &resolved,
@@ -50,7 +50,14 @@ pub(super) fn run(
     };
 
     let built = crate::build::build(
-        paths, settings, &instance, &resolved, profile, *force, reporter,
+        paths,
+        settings,
+        &instance,
+        &resolved,
+        &lock_report.lock,
+        profile,
+        *force,
+        reporter,
     )?;
     let generation_id =
         common::record_generation(settings, &instance.dir, &meta.source, &built, reporter)?;

@@ -76,8 +76,16 @@ pub(super) fn run(
 
     if build.unwrap_or(settings.rebuild_after_mod_change) {
         reporter.check_cancelled()?;
-        let built =
-            crate::build::build(paths, settings, &instance, &resolved, None, false, reporter)?;
+        let built = crate::build::build(
+            paths,
+            settings,
+            &instance,
+            &resolved,
+            &lock_report.lock,
+            None,
+            false,
+            reporter,
+        )?;
         common::record_generation(settings, &instance.dir, &meta.source, &built, reporter)?;
         summary.push_str(if built.cached {
             " \u{b7} built (cached)"

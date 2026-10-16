@@ -108,6 +108,13 @@ impl OpHandle {
                         view.mark_died(self.cancelled.load(Ordering::SeqCst));
                         changed = true;
                     }
+                    // Both reader threads only exit once their pipe closes, which only happens
+                    // once the child itself has exited (or exec'd away its own copies): it is
+                    // safe, and immediate, to reap it here instead of leaving it a zombie until
+                    // the launcher exits.
+                    if let Ok(mut child) = self.child.lock() {
+                        let _ = child.wait();
+                    }
                     break;
                 }
             }
@@ -148,6 +155,20 @@ impl OpHandle {
             Ok(mut child) => matches!(child.try_wait(), Ok(None)),
             Err(_) => false,
         }
+    }
+}
+
+impl Drop for OpHandle {
+    /// Guarantee the child is reaped even if the caller never calls [`OpHandle::poll`] again
+    /// (or never did at all) after losing interest in this handle: a detached thread waits on it,
+    /// so this never blocks the dropping thread even if the child is still running.
+    fn drop(&mut self) {
+        let child = Arc::clone(&self.child);
+        std::thread::spawn(move || {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.wait();
+            }
+        });
     }
 }
 
@@ -305,5 +326,58 @@ mod tests {
         poll_until(&mut handle, &mut view, Duration::from_secs(10));
         assert_eq!(view.outcome, Some(OpOutcome::Cancelled));
         assert!(!handle.running());
+    }
+
+    /// `poll` reaps the child itself once its pipes close, instead of leaving it a zombie until
+    /// the launcher happens to call `running` (which GUI code using only `poll` never does).
+    #[test]
+    fn poll_reaps_the_child_without_running_being_called() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = write_script(tmp.path(), "fake-op", "exit 0\n");
+        let request = OpRequest::Build {
+            instance: "demo".into(),
+            force: false,
+            profile: None,
+        };
+        let mut handle = spawn_with_retry(&script, &request).unwrap();
+        let pid = handle.child.lock().unwrap().id();
+
+        let mut view = OpView::default();
+        poll_until(&mut handle, &mut view, Duration::from_secs(5));
+
+        // Reaped: /proc/<pid> no longer names a process at all (not merely a zombie).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while std::path::Path::new(&format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "child pid {pid} was not reaped"
+        );
+    }
+
+    /// Dropping a handle nobody ever polled or cancelled must still reap its child eventually
+    /// (a detached waiter thread), so abandoning a handle never leaves a zombie behind.
+    #[test]
+    fn drop_reaps_an_unpolled_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = write_script(tmp.path(), "fake-op", "exit 0\n");
+        let request = OpRequest::Build {
+            instance: "demo".into(),
+            force: false,
+            profile: None,
+        };
+        let handle = spawn_with_retry(&script, &request).unwrap();
+        let pid = handle.child.lock().unwrap().id();
+        drop(handle);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while std::path::Path::new(&format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "child pid {pid} was not reaped after drop"
+        );
     }
 }

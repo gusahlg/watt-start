@@ -5,6 +5,7 @@ use pwc_builder::wrapped_command;
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Change, Phase, Reporter};
+use crate::locks::FileLock;
 use crate::ops::{OpRequest, OpResult};
 use crate::paths::{InstancePaths, Paths, now_secs};
 use crate::settings::Settings;
@@ -30,8 +31,11 @@ pub(super) fn run(
     let instance = common::open_instance(paths, name)?;
     let instance_paths = InstancePaths::new(&instance.dir);
 
-    if let Some(pid) = running_pid(&instance.dir) {
-        bail!("`{name}` is already running (pid {pid})");
+    // `game.lock` (not `game.toml`, which is just a display record) is the truth: held for
+    // exactly as long as the game process lives, even across a launcher crash. A game started
+    // through `pwc run` holds no such lock (see ARCHITECTURE.md); the launcher cannot see it.
+    if FileLock::is_held(&instance_paths.game_lock()) {
+        bail!("`{name}` is running; close the game first");
     }
 
     let (exe, wrapper, asset_dir, environment) = if *last_good {
@@ -55,15 +59,23 @@ pub(super) fn run(
         let resolved = crate::binding::resolve(paths, settings, &meta.source)
             .context("cannot resolve the instance's sources")?;
         reporter.phase(Phase::Lock, false);
-        crate::build::lock(
+        let lock_report = crate::build::lock(
             paths,
             &instance,
             &resolved,
             &pwc_instance::LockOptions::default(),
             reporter,
         )?;
-        let built =
-            crate::build::build(paths, settings, &instance, &resolved, None, false, reporter)?;
+        let built = crate::build::build(
+            paths,
+            settings,
+            &instance,
+            &resolved,
+            &lock_report.lock,
+            None,
+            false,
+            reporter,
+        )?;
         common::record_generation(settings, &instance.dir, &meta.source, &built, reporter)?;
         reporter.phase(Phase::Launch, false);
         (
@@ -90,8 +102,14 @@ pub(super) fn run(
     let log = instance_paths
         .logs()
         .join(format!("game-{}.log", now_secs()));
+    // Acquired, made inheritable, then launched: the detached game's copy of the descriptor
+    // keeps the flock held for exactly as long as the game runs, however the launcher itself
+    // exits or crashes afterwards (dropping our own copy here does not release it).
+    let game_lock = crate::process::acquire_inheritable_lock(&instance_paths.game_lock())
+        .context("cannot take the game lock")?;
     let pid =
         crate::process::launch_detached(&mut command, &log).context("cannot start the game")?;
+    drop(game_lock);
 
     let running = RunningGame {
         pid,
@@ -110,6 +128,7 @@ pub(super) fn run(
     Ok(format!("Started `{name}` (pid {pid})"))
 }
 
+/// `watt-start/game.toml`: display-only (pid, started, log); `game.lock` is the truth.
 #[derive(Serialize, Deserialize)]
 struct RunningGame {
     pid: u32,
@@ -117,11 +136,4 @@ struct RunningGame {
     started: u64,
     #[serde(default)]
     log: std::path::PathBuf,
-}
-
-fn running_pid(instance_dir: &std::path::Path) -> Option<u32> {
-    let path = InstancePaths::new(instance_dir).running();
-    let text = std::fs::read_to_string(path).ok()?;
-    let running: RunningGame = toml::from_str(&text).ok()?;
-    crate::process::is_alive(running.pid).then_some(running.pid)
 }
