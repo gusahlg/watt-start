@@ -158,19 +158,30 @@ fn subtitle(entry: &InstanceEntry) -> String {
     }
 }
 
+/// One consistent status element on the row's right: a running dot, an update pill, or a plain
+/// readiness dot — never more than one, so nothing pushes anything else out of place.
 fn status_badge(ui: &mut egui::Ui, entry: &InstanceEntry, updates: usize) {
     if entry.status.running.is_some() {
-        ui.label(theme::muted("Running"));
         theme::dot(ui, theme::CYAN);
-        return;
+    } else if updates > 0 {
+        let label = if updates == 1 {
+            "1 update".to_owned()
+        } else {
+            format!("{updates} updates")
+        };
+        egui::Frame::new()
+            .fill(theme::CYAN)
+            .corner_radius(255u8)
+            .inner_margin(egui::Margin::symmetric(7, 2))
+            .show(ui, |ui| {
+                ui.colored_label(egui::Color32::from_rgb(0x08, 0x1a, 0x1a), label);
+            });
+    } else {
+        let color = match &entry.status.readiness {
+            Readiness::Ready { .. } => theme::GOOD,
+            Readiness::New | Readiness::NeedsBuild { .. } => theme::WARN,
+            Readiness::Broken { .. } => theme::BAD,
+        };
+        theme::dot(ui, color);
     }
-    if updates > 0 {
-        ui.colored_label(theme::CYAN, format!("Update ({updates})"));
-    }
-    let color = match &entry.status.readiness {
-        Readiness::Ready { .. } => theme::GOOD,
-        Readiness::New | Readiness::NeedsBuild { .. } => theme::WARN,
-        Readiness::Broken { .. } => theme::BAD,
-    };
-    theme::dot(ui, color);
 }

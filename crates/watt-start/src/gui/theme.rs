@@ -139,9 +139,26 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     });
 }
 
-/// A "Title"-sized [`egui::RichText`] (between [`TextStyle::Heading`] and [`TextStyle::Body`]).
+/// Near-white, for text that must read as the brightest thing on the page (a big heading, the
+/// instance title): the default foreground is a working grey, legible but not a focal point.
+pub const BRIGHT: Color32 = Color32::from_rgb(0xf5, 0xf7, 0xfc);
+
+/// A "Title"-sized [`egui::RichText`] (between [`TextStyle::Heading`] and [`TextStyle::Body`]),
+/// bright and bold: a page-level heading ("Settings", "Welcome to watt-start").
 pub fn title(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).font(FontId::new(20.0, FontFamily::Proportional))
+    egui::RichText::new(text)
+        .font(FontId::new(20.0, FontFamily::Proportional))
+        .color(BRIGHT)
+        .strong()
+}
+
+/// The instance page's own title: bigger than [`title`] and just as bright, so it is
+/// unmistakably the primary heading of the page (the dir name under it stays small and muted).
+pub fn heading(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text)
+        .font(FontId::new(28.0, FontFamily::Proportional))
+        .color(BRIGHT)
+        .strong()
 }
 
 /// A "Subheading"-sized [`egui::RichText`].
