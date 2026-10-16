@@ -272,7 +272,8 @@ pub(super) fn update_managed(
 
     let pin_changed = old_pin != Some(&new_pin);
     let mut whats_new = Vec::new();
-    if pin_changed {
+    // A first download has nothing to compare with: listing the newest commits would be noise.
+    if pin_changed && old_pin.is_some() {
         for (repo, mirror, old_sha, new_sha) in [
             (
                 Repo::Game,
