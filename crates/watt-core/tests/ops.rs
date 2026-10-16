@@ -290,6 +290,32 @@ fn rollback_restores_the_previous_generations_lock() {
     let rolled_back = catalog::load_instance(&world.paths, "survival").unwrap();
     assert_eq!(rolled_back.packages.len(), 1);
     assert_eq!(rolled_back.packages[0].id, "pwc.hotbar");
+    // The wanted mods come back too, so the next build keeps the rolled-back set.
+    let wanted: Vec<String> = rolled_back
+        .manifest
+        .mods
+        .keys()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(wanted, ["pwc.hotbar"]);
+    let (outcome, _sink) = world.run(&OpRequest::Build {
+        instance: "survival".to_owned(),
+        force: false,
+        profile: None,
+    });
+    assert_ok(&outcome);
+    let rebuilt = catalog::load_instance(&world.paths, "survival").unwrap();
+    assert_eq!(rebuilt.packages.len(), 1);
+
+    // ...and rolling forward again restores the inventory.
+    let (outcome, _sink) = world.run(&OpRequest::Rollback {
+        instance: "survival".to_owned(),
+        generation: Some(after_add.meta.generations[0].id),
+    });
+    assert_ok(&outcome);
+    let forward = catalog::load_instance(&world.paths, "survival").unwrap();
+    assert_eq!(forward.manifest.mods.len(), 2);
+    assert_eq!(forward.packages.len(), 2);
 }
 
 #[test]

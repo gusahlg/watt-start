@@ -76,6 +76,20 @@ pub(super) fn run(
     }
 
     reporter.phase(Phase::Lock, false);
+    // `instance.toml` first, then the lock: killed in between, the lock is merely stale and the
+    // next op relocks it from the restored wanted mods.
+    let manifest_path = InstancePaths::new(&instance.dir).generation_manifest(target_id);
+    let instance = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => {
+            crate::paths::write_atomic(&instance.manifest_path(), text.as_bytes())?;
+            common::open_instance(paths, name)?
+        }
+        // Generations recorded before manifests were kept: restore the lock only.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => instance,
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot read {}", manifest_path.display()));
+        }
+    };
     let generation_lock_path = InstancePaths::new(&instance.dir).generation_lock(target_id);
     let lock_text = std::fs::read_to_string(&generation_lock_path)
         .with_context(|| format!("cannot read {}", generation_lock_path.display()))?;

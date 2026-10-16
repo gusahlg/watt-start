@@ -391,14 +391,21 @@ mod tests {
     fn final_link_detection() {
         let units = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         // What Cargo printed at the end of a real instance build.
-        assert!(is_final_link(273, 275, &units(&["pwc-game(bin)", "pwc-golden(bin)"])));
+        assert!(is_final_link(
+            273,
+            275,
+            &units(&["pwc-game(bin)", "pwc-golden(bin)"])
+        ));
         assert!(is_final_link(274, 275, &units(&["pwc-game(bin)"])));
-        assert!(is_final_link(436, 437, &units(&["pwc-game-instance(bin \"pwc-game\")"])));
+        assert!(is_final_link(
+            436,
+            437,
+            &units(&["pwc-game-instance(bin \"pwc-game\")"])
+        ));
         assert!(!is_final_link(272, 275, &units(&["project_watt_cubed"])));
         assert!(!is_final_link(436, 437, &units(&["voxel_engine"])));
         assert!(!is_final_link(430, 437, &units(&["pwc-game(bin)"])));
         assert!(!is_final_link(436, 437, &[]));
         assert!(!is_final_link(0, 0, &units(&["pwc-game(bin)"])));
     }
-
 }

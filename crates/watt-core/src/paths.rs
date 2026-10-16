@@ -187,6 +187,11 @@ impl InstancePaths {
         self.generations().join(format!("{id}.lock"))
     }
 
+    /// `watt-start/generations/<id>.instance.toml`: the wanted mods when the generation was built.
+    pub fn generation_manifest(&self, id: u64) -> PathBuf {
+        self.generations().join(format!("{id}.instance.toml"))
+    }
+
     /// `watt-start/game.toml`.
     pub fn running(&self) -> PathBuf {
         self.launcher().join("game.toml")

@@ -250,6 +250,11 @@ pub(super) fn record_generation(
         .collect();
     let game_version = lock.pwc.version.to_string();
     let lock_text = lock.to_toml_string();
+    // The wanted mods belong to the generation too: restoring only the lock would leave an
+    // `instance.toml` that the next relock "corrects" back to the newer mod set.
+    let manifest_path = instance_dir.join("instance.toml");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("cannot read {}", manifest_path.display()))?;
 
     let meta = crate::meta::update(instance_dir, |meta| {
         let reuse = meta
@@ -281,11 +286,16 @@ pub(super) fn record_generation(
         }
         let id = meta.generations.first().expect("just written").id;
         write_atomic(&instance_paths.generation_lock(id), lock_text.as_bytes())?;
+        write_atomic(
+            &instance_paths.generation_manifest(id),
+            manifest_text.as_bytes(),
+        )?;
 
         let keep = settings.generations_to_keep.max(1) as usize;
         while meta.generations.len() > keep {
             if let Some(old) = meta.generations.pop() {
                 let _ = std::fs::remove_file(instance_paths.generation_lock(old.id));
+                let _ = std::fs::remove_file(instance_paths.generation_manifest(old.id));
             }
         }
         Ok(())
