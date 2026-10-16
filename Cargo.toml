@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/watt-core", "crates/watt-start"]
+default-members = ["crates/watt-start"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+authors = ["Project Watt Cubed contributors"]
+repository = "https://github.com/gusahlg/watt-start"
+rust-version = "1.90"
+
+[workspace.dependencies]
+watt-core = { path = "crates/watt-core" }
+
+# The package manager's library crates, from the sibling checkout (the same convention as the
+# game's `../voxel-engine`). The launcher is a front end over them, like `pwc` itself.
+pwc-builder = { path = "../pwc-package-manager/crates/pwc-builder" }
+pwc-instance = { path = "../pwc-package-manager/crates/pwc-instance" }
+pwc-manifest = { path = "../pwc-package-manager/crates/pwc-manifest" }
+pwc-package = { path = "../pwc-package-manager/crates/pwc-package" }
+pwc-store = { path = "../pwc-package-manager/crates/pwc-store" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+toml = "0.9"
+
+# The GUI: egui on wgpu. wgpu picks Vulkan, which every machine that runs the game has.
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
+egui = "0.37"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2

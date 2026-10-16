@@ -1,0 +1,28 @@
+[package]
+name = "watt-core"
+description = "The launcher's engine: instances, sources, updates, builds and the op event protocol. No GUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pwc-builder.workspace = true
+pwc-instance.workspace = true
+pwc-manifest.workspace = true
+pwc-package.workspace = true
+pwc-store.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
