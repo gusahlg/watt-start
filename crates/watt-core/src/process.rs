@@ -18,6 +18,49 @@ use anyhow::{Context as _, Result};
 
 use crate::events::Reporter;
 
+/// Open (creating if needed) and exclusively lock `path`, then clear `FD_CLOEXEC` on the
+/// descriptor so a process spawned right after (via [`launch_detached`]) inherits it — and with
+/// it the lock, since `flock` follows the open file description: the lock is released only once
+/// every holder of that description has closed its copy. Fails (rather than blocking) if the
+/// lock is already held. Keep the returned file alive until after `Command::spawn()`; dropping
+/// it immediately after is fine, since the spawned child's inherited copy of the descriptor
+/// keeps the lock held for as long as that child lives.
+#[cfg(unix)]
+pub fn acquire_inheritable_lock(path: &Path) -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd as _;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    file.try_lock()
+        .with_context(|| format!("{} is already locked", path.display()))?;
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is a valid descriptor this function owns exclusively (just opened above);
+    // `fcntl` with `F_GETFD`/`F_SETFD` only touches the kernel's descriptor-table entry for it,
+    // never any memory of this process.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+        }
+    }
+    Ok(file)
+}
+
+/// No-op on non-Unix targets: there is nothing to inherit across a `spawn`, so this always fails
+/// rather than silently not protecting anything.
+#[cfg(not(unix))]
+pub fn acquire_inheritable_lock(path: &Path) -> Result<std::fs::File> {
+    let _ = path;
+    anyhow::bail!("game locks are only implemented on Unix")
+}
+
 /// The running stderr capture. Dropping it restores the original stderr and joins the reader
 /// after draining what is left.
 #[cfg(unix)]
@@ -78,16 +121,20 @@ pub fn capture_stderr(reporter: Reporter, log: Option<std::fs::File>) -> Result<
     let _ = std::io::stderr().flush();
 
     let mut fds = [0i32; 2];
-    // SAFETY: `pipe(2)` only fills `fds` with two freshly allocated descriptors; the buffer is a
-    // valid, correctly sized `&mut [i32; 2]`.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+    // SAFETY: `pipe2(2)` only fills `fds` with two freshly allocated descriptors; the buffer is a
+    // valid, correctly sized `&mut [i32; 2]`. `O_CLOEXEC` keeps both ends private to this
+    // process: a child spawned while the capture is active (cargo, the wrapped game) must never
+    // inherit our read end or it could hold the pipe open past this process's own exit.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(std::io::Error::last_os_error()).context("cannot create a pipe");
     }
     let (read_fd, write_fd) = (fds[0], fds[1]);
 
-    // SAFETY: `dup(2)` duplicates the currently valid fd 2; the result is a new fd this function
-    // owns until it is handed to the capture (which closes it on drop).
-    let original = unsafe { libc::dup(2) };
+    // SAFETY: `fcntl(F_DUPFD_CLOEXEC)` duplicates the currently valid fd 2 into a close-on-exec
+    // descriptor; the result is a new fd this function owns until it is handed to the capture
+    // (which closes it on drop). Unlike `write_fd` below, this one must never leak into a child
+    // either: it is only this process's private backup of the original stderr target.
+    let original = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 0) };
     if original < 0 {
         let err = std::io::Error::last_os_error();
         // SAFETY: both fds were just created above by this function and are not used elsewhere.
@@ -99,7 +146,9 @@ pub fn capture_stderr(reporter: Reporter, log: Option<std::fs::File>) -> Result<
     }
 
     // SAFETY: `dup2(write_fd, 2)` makes fd 2 an alias of `write_fd` (closing fd 2's previous
-    // target first); both fds are valid and owned by this process.
+    // target first); both fds are valid and owned by this process. `dup2`'s target descriptor is
+    // always created without `FD_CLOEXEC` regardless of the source's flag, so fd 2 itself stays
+    // inheritable — exactly the one descriptor a wrapped build or the game is meant to inherit.
     if unsafe { libc::dup2(write_fd, 2) } < 0 {
         let err = std::io::Error::last_os_error();
         // SAFETY: all three fds were created by this function and are not used elsewhere yet.
@@ -316,4 +365,39 @@ pub fn set_nice(nice: i32) {
     }
     #[cfg(not(unix))]
     let _ = nice;
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::events::{CancelToken, VecSink};
+    use std::sync::Arc;
+
+    /// A child spawned while the capture is active, even one that redirects its own stderr
+    /// elsewhere, must never inherit our pipe's read end or our saved original fd 2 (the close-
+    /// on-exec fix): if it did, a long-lived child (a detached game, in production) would hold
+    /// those descriptors open, and dropping the capture would have to wait for it.
+    #[test]
+    fn dropping_the_capture_does_not_wait_on_an_unrelated_child() {
+        let sink = Arc::new(VecSink::default());
+        let reporter = Reporter::new(sink, "t", CancelToken::default());
+        let capture = capture_stderr(reporter, None).expect("capture_stderr");
+
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cannot spawn sleep");
+
+        let started = std::time::Instant::now();
+        drop(capture);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "dropping the capture waited on an unrelated child ({:?})",
+            started.elapsed()
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
