@@ -247,23 +247,29 @@ fn check_vulkan() -> Check {
         "/run/opengl-driver/share/vulkan/icd.d",
     ];
 
-    for dir in &dirs {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(ext) = path.extension()
-                    && ext == "json"
-                    && let Some(path_str) = path.to_str()
-                {
-                    return Check {
-                        name: "Vulkan driver".to_string(),
-                        level: Level::Ok,
-                        detail: path_str.to_string(),
-                        hint: String::new(),
-                    };
-                }
-            }
-        }
+    // Name every driver found ("nvidia, radeon"), not just the first file: machines often carry
+    // several Mesa drivers next to the one their GPU uses.
+    let mut drivers: Vec<String> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension()? == "json").then(|| {
+                let stem = path.file_stem()?.to_string_lossy().into_owned();
+                Some(stem.split('_').next().unwrap_or(&stem).to_owned())
+            })?
+        })
+        .collect();
+    drivers.sort();
+    drivers.dedup();
+    if !drivers.is_empty() {
+        return Check {
+            name: "Vulkan driver".to_string(),
+            level: Level::Ok,
+            detail: drivers.join(", "),
+            hint: String::new(),
+        };
     }
 
     Check {

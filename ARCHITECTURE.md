@@ -97,6 +97,6 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   the CLI respects them too.
 - A cancellable, output-capturing build entry point in `pwc-builder` (`compile_with`) would allow
   in-process builds; the child process would remain useful for isolation.
-- Mirrors are full clones (the game's history is ~560 MiB); a partial-clone mode would make the
-  first download smaller.
+- Mirrors are full clones. The public repositories are small today (tens of MiB together); a
+  partial-clone mode would keep the first download small if the history grows.
 - Windows: the op runner's stderr capture and process groups are Unix-only today.
