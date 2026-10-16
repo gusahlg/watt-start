@@ -162,8 +162,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("watt-start.toml");
         assert_eq!(Settings::load(&path).unwrap(), Settings::default());
-        let mut s = Settings::default();
-        s.rebuild_after_update = false;
+        let mut s = Settings {
+            rebuild_after_update: false,
+            ..Settings::default()
+        };
         s.remotes.insert(Repo::Engine, "/src/voxel-engine".into());
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

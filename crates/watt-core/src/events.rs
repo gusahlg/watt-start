@@ -36,6 +36,8 @@ pub struct Envelope {
 }
 
 /// What happened.
+// Events are short-lived protocol values; boxing the big variants would only complicate serde.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Event {
@@ -275,6 +277,7 @@ pub enum Recovery {
 }
 
 /// State an op changed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Change {
