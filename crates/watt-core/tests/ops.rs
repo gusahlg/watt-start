@@ -446,34 +446,88 @@ fn status_is_needs_build_after_a_mod_change() {
     );
 }
 
-// --- Managed-source tests: need `git` and `snapshots`, still `todo!()` in worker A's files. ---
+// --- Managed-source tests: local git checkouts stand in for the game/engine/mods mirrors. ---
 
-#[test]
-#[ignore = "needs git/snapshots (worker A)"]
-fn create_managed_instance_downloads_and_locks() {
-    let world = World::new();
-    let outcome = create(
-        &world,
-        "main",
-        SourceSpec::Managed {
-            channel: "main".to_owned(),
-            engine_ref: watt_core::meta::AUTO.to_owned(),
-            mods_ref: watt_core::meta::AUTO.to_owned(),
-        },
-        &[],
-        false,
-    );
-    assert_ok(&outcome);
+fn managed(channel: &str) -> SourceSpec {
+    SourceSpec::Managed {
+        channel: channel.to_owned(),
+        engine_ref: watt_core::meta::AUTO.to_owned(),
+        mods_ref: watt_core::meta::AUTO.to_owned(),
+    }
 }
 
 #[test]
-#[ignore = "needs git/snapshots (worker A)"]
+fn create_managed_instance_downloads_and_locks() {
+    let mut world = World::new();
+    let remotes = world.add_managed_remotes();
+    world.add_remote_package(&remotes.mods, "pwc.hotbar", "1.0.0", &[]);
+
+    let outcome = create(&world, "main", managed("main"), &["pwc.hotbar"], true);
+    let summary = assert_ok(&outcome);
+    assert!(summary.contains("Created"), "{summary}");
+
+    let card = catalog::load_instance(&world.paths, "main").unwrap();
+    assert_eq!(card.packages.len(), 1);
+    let watt_core::meta::Binding::Managed { pin: Some(pin), .. } = &card.meta.source else {
+        panic!(
+            "expected a pinned managed binding, got {:?}",
+            card.meta.source
+        );
+    };
+    assert_eq!(pin.game_ref, "main");
+    assert!(
+        matches!(
+            status::compute(&world.paths, &card).unwrap().readiness,
+            Readiness::Ready { .. }
+        ),
+        "{:?}",
+        status::compute(&world.paths, &card).unwrap().readiness
+    );
+}
+
+#[test]
 fn update_managed_instance_moves_the_pin() {
-    let world = World::new();
+    let mut world = World::new();
+    let remotes = world.add_managed_remotes();
+    assert_ok(&create(&world, "main", managed("main"), &[], false));
+
+    let before = catalog::load_instance(&world.paths, "main").unwrap();
+    let watt_core::meta::Binding::Managed {
+        pin: Some(before_pin),
+        ..
+    } = before.meta.source
+    else {
+        panic!("expected a pinned managed binding");
+    };
+
+    // Move the game's `main` branch forward.
+    std::fs::write(remotes.game.join("CHANGED"), "x").unwrap();
+    support::commit_all(&remotes.game, "game: a change");
+
     let (outcome, _sink) = world.run(&OpRequest::Update {
         instance: "main".to_owned(),
         build: Some(false),
         reset_lock: false,
     });
-    assert_ok(&outcome);
+    let summary = assert_ok(&outcome);
+    assert!(summary.contains("Updated to main"), "{summary}");
+
+    let after = catalog::load_instance(&world.paths, "main").unwrap();
+    let watt_core::meta::Binding::Managed {
+        pin: Some(after_pin),
+        ..
+    } = after.meta.source
+    else {
+        panic!("expected a pinned managed binding");
+    };
+    assert_ne!(before_pin.game, after_pin.game);
+
+    // Already up to date the second time.
+    let (outcome, _sink) = world.run(&OpRequest::Update {
+        instance: "main".to_owned(),
+        build: Some(false),
+        reset_lock: false,
+    });
+    let summary = assert_ok(&outcome);
+    assert!(summary.contains("Already up to date"), "{summary}");
 }

@@ -9,8 +9,18 @@ use pwc_instance::{Config, Dirs, RepositoryConfig, Wrapper};
 
 use watt_core::events::{CancelToken, OpOutcome, Reporter, VecSink};
 use watt_core::ops::OpRequest;
-use watt_core::paths::Paths;
+use watt_core::paths::{Paths, Repo};
 use watt_core::settings::Settings;
+
+/// The local "remote" git checkouts a managed instance's mirrors are fetched from.
+pub struct ManagedRemotes {
+    pub game: PathBuf,
+    /// Kept so the checkout stays alive on disk for the whole test (nothing reads it back; the
+    /// engine mirror is addressed through `settings.remotes` instead).
+    #[allow(dead_code)]
+    pub engine: PathBuf,
+    pub mods: PathBuf,
+}
 
 /// These tests exercise real OS primitives (advisory file locks, detached subprocesses) that
 /// each test treats as exclusively its own; run them one at a time regardless of the harness's
@@ -104,17 +114,101 @@ impl World {
         let outcome = watt_core::ops::run(&self.paths, &self.settings, request, &reporter);
         (outcome, sink)
     }
+
+    /// Create local, plain (non-bare) git checkouts standing in for the game, engine and mods
+    /// repositories, each with a `main` branch, and point `settings.remotes` at them so
+    /// `Managed` instances fetch from the filesystem instead of the network.
+    pub fn add_managed_remotes(&mut self) -> ManagedRemotes {
+        let game = init_git_repo(&self.root.path().join("remote-game"));
+        write_pwc_tree(&game, "2.0.0");
+        commit_all(&game, "game: initial");
+
+        let engine = init_git_repo(&self.root.path().join("remote-engine"));
+        std::fs::create_dir_all(engine.join("src")).unwrap();
+        std::fs::write(
+            engine.join("Cargo.toml"),
+            "[package]\nname = \"voxel_engine\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(engine.join("src/lib.rs"), "").unwrap();
+        commit_all(&engine, "engine: initial");
+
+        let mods = init_git_repo(&self.root.path().join("remote-mods"));
+        std::fs::create_dir_all(mods.join("mods")).unwrap();
+        std::fs::write(mods.join("mods/.gitkeep"), "").unwrap();
+        commit_all(&mods, "mods: initial");
+
+        self.settings
+            .remotes
+            .insert(Repo::Game, game.to_string_lossy().into_owned());
+        self.settings
+            .remotes
+            .insert(Repo::Engine, engine.to_string_lossy().into_owned());
+        self.settings
+            .remotes
+            .insert(Repo::Mods, mods.to_string_lossy().into_owned());
+
+        ManagedRemotes { game, engine, mods }
+    }
+
+    /// Add a package to a `mods` remote checkout (from [`World::add_managed_remotes`]) and commit
+    /// it, so the next `Update`/`Create` fetch sees it.
+    pub fn add_remote_package(
+        &self,
+        mods_repo: &Path,
+        id: &str,
+        version: &str,
+        deps: &[(&str, &str)],
+    ) {
+        let dir = mods_repo.join("mods").join(format!("{id}-{version}"));
+        write_package(&dir, id, version, deps);
+        commit_all(mods_repo, &format!("mods: add {id} {version}"));
+    }
 }
 
-fn fake_pwc_source(root: &Path) -> PathBuf {
-    let dir = root.join("project_watt_cubed");
+fn init_git_repo(dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    run_git(dir, &["init", "-q", "-b", "main"]);
+    run_git(dir, &["config", "user.email", "test@example.com"]);
+    run_git(dir, &["config", "user.name", "Test"]);
+    run_git(dir, &["config", "commit.gpgsign", "false"]);
+    dir.to_path_buf()
+}
+
+/// `git add -A && git commit` (allowing an empty commit), returning the new `HEAD`.
+pub fn commit_all(dir: &Path, message: &str) -> String {
+    run_git(dir, &["add", "-A"]);
+    run_git(dir, &["commit", "-q", "--allow-empty", "-m", message]);
+    run_git(dir, &["rev-parse", "HEAD"]).trim().to_owned()
+}
+
+fn run_git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("cannot run git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The fake PWC source tree's files, written at `dir` (used both for the local, non-git PWC
+/// source and for the managed "game" remote checkout).
+fn write_pwc_tree(dir: &Path, version: &str) {
     std::fs::create_dir_all(dir.join("crates/pwc-mod-api/src")).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("assets")).unwrap();
     std::fs::write(
         dir.join("Cargo.toml"),
-        "[package]\nname = \"project_watt_cubed\"\nversion = \"2.0.0\"\nedition = \"2024\"\n\n\
-         [workspace]\nresolver = \"2\"\nmembers = [\"crates/pwc-mod-api\"]\n",
+        format!(
+            "[package]\nname = \"project_watt_cubed\"\nversion = \"{version}\"\nedition = \"2024\"\n\n\
+             [workspace]\nresolver = \"2\"\nmembers = [\"crates/pwc-mod-api\"]\n"
+        ),
     )
     .unwrap();
     std::fs::write(dir.join("Cargo.lock"), "# seed lock\nversion = 4\n").unwrap();
@@ -125,6 +219,11 @@ fn fake_pwc_source(root: &Path) -> PathBuf {
     )
     .unwrap();
     std::fs::write(dir.join("crates/pwc-mod-api/src/lib.rs"), "").unwrap();
+}
+
+fn fake_pwc_source(root: &Path) -> PathBuf {
+    let dir = root.join("project_watt_cubed");
+    write_pwc_tree(&dir, "2.0.0");
     dir
 }
 
