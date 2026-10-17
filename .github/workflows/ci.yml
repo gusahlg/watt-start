@@ -1,0 +1,128 @@
+# fmt, clippy and watt-core tests. Tag pushes are built by release.yml instead.
+name: CI
+
+on:
+  push:
+    tags-ignore:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Sibling checkout of gusahlg/pwc-package-manager. The workspace depends on
+  # it at ../pwc-package-manager. Edit this line to pin a ref.
+  PWC_REF: main
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    defaults:
+      run:
+        working-directory: watt-start
+        shell: bash
+    steps:
+      - name: Checkout watt-start
+        uses: actions/checkout@v4
+        with:
+          path: watt-start
+
+      - name: Checkout pwc-package-manager
+        uses: actions/checkout@v4
+        with:
+          repository: gusahlg/pwc-package-manager
+          ref: ${{ env.PWC_REF }}
+          path: pwc-package-manager
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # The binary dlopens Wayland, X11, libxkbcommon and Vulkan at runtime
+      # and links only glibc. pkg-config and libwayland-dev are here in case
+      # wayland-sys ever builds without its dlopen feature. git is what the
+      # watt-core tests shell out to.
+      - name: Install build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git pkg-config libwayland-dev
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: watt-start
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --examples --locked -- -D warnings
+
+      - name: Test watt-core
+        run: cargo test -p watt-core --locked
+
+      - name: Test xtask
+        run: cargo test -p xtask --locked
+
+  # The window tests render through wgpu. A hosted runner has no GPU. lavapipe
+  # (mesa's software Vulkan) is the stand-in, and it is not reliable enough to
+  # gate merges: a red run here is a signal, not a failure. continue-on-error
+  # keeps it that way.
+  gui-snapshots:
+    name: gui snapshots (lavapipe, optional)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: watt-start
+    steps:
+      - name: Checkout watt-start
+        uses: actions/checkout@v4
+        with:
+          path: watt-start
+
+      - name: Checkout pwc-package-manager
+        uses: actions/checkout@v4
+        with:
+          repository: gusahlg/pwc-package-manager
+          ref: ${{ env.PWC_REF }}
+          path: pwc-package-manager
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install lavapipe and the libraries the binary loads
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git pkg-config libwayland-dev libxkbcommon-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libvulkan-dev mesa-vulkan-drivers
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: watt-start
+
+      - name: Point Vulkan at lavapipe
+        run: |
+          icd=$(find /usr/share/vulkan -name '*lvp*.json' 2>/dev/null | head -n 1 || true)
+          if [ -z "$icd" ]; then
+            echo "lavapipe ICD not installed; snapshot tests will fail (non-blocking)"
+          else
+            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+            echo "Using $icd"
+          fi
+          echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
+
+      - name: Snapshot tests
+        run: cargo test -p watt-start --test gui_snapshots --locked

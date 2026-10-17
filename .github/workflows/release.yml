@@ -1,0 +1,317 @@
+# Tag v* builds the release assets the updater and the installers consume.
+# The tag's version (without the leading v) must equal workspace.package.version.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Sibling checkout of gusahlg/pwc-package-manager. The workspace depends on
+  # it at ../pwc-package-manager. Edit this line to pin a ref.
+  PWC_REF: main
+
+jobs:
+  version:
+    name: tag matches Cargo.toml
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    defaults:
+      run:
+        working-directory: watt-start
+    steps:
+      - name: Checkout watt-start
+        uses: actions/checkout@v4
+        with:
+          path: watt-start
+
+      - name: Compare tag to workspace version
+        id: check
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v*) ver="${tag#v}" ;;
+            *)
+              echo "tag ${tag} does not start with v" >&2
+              exit 1
+              ;;
+          esac
+          case "$ver" in
+            "" | *[!0-9A-Za-z._+-]*)
+              echo "refusing version ${ver}" >&2
+              exit 1
+              ;;
+          esac
+          ws=$(awk '
+            /^\[workspace\.package\]/ { in_pkg = 1; next }
+            /^\[/ { in_pkg = 0 }
+            in_pkg && /^version[[:space:]]*=/ {
+              sub(/^version[[:space:]]*=[[:space:]]*"/, "")
+              sub(/".*$/, "")
+              print
+              exit
+            }
+          ' Cargo.toml)
+          if [ -z "$ws" ]; then
+            echo "workspace.package.version not found in Cargo.toml" >&2
+            exit 1
+          fi
+          if [ "$ws" != "$ver" ]; then
+            echo "tag ${tag} is version ${ver} but Cargo.toml says ${ws}" >&2
+            exit 1
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${ver}"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-22.04-arm
+            target: aarch64-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-windows-msvc
+            archive: zip
+    defaults:
+      run:
+        working-directory: watt-start
+        shell: bash
+    steps:
+      - name: Checkout watt-start
+        uses: actions/checkout@v4
+        with:
+          path: watt-start
+
+      - name: Checkout pwc-package-manager
+        uses: actions/checkout@v4
+        with:
+          repository: gusahlg/pwc-package-manager
+          ref: ${{ env.PWC_REF }}
+          path: pwc-package-manager
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # See ci.yml. Every display and Vulkan library is dlopen'd at runtime
+      # on the user's machine; the binary links only glibc.
+      - name: Install build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git pkg-config libwayland-dev
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: watt-start
+
+      - name: Build
+        run: cargo build --release --locked -p watt-start
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_KIND: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          ver="$VERSION"
+          target="$TARGET"
+          if [ "$ARCHIVE_KIND" = "zip" ]; then
+            src="target/release/watt-start.exe"
+            bare="watt-start-${ver}-${target}.exe"
+          else
+            src="target/release/watt-start"
+            bare="watt-start-${ver}-${target}"
+          fi
+          test -f "$src"
+          cp "$src" "$bare"
+          if [ "$ARCHIVE_KIND" != "zip" ]; then
+            chmod 755 "$bare"
+          fi
+
+          stage="stage-${target}"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          archive="watt-start-${ver}-${target}.${ARCHIVE_KIND}"
+          if [ "$ARCHIVE_KIND" = "zip" ]; then
+            cp "$src" "$stage/watt-start.exe"
+            # 7-Zip is preinstalled on windows-latest. Git Bash's tar is GNU
+            # tar, which cannot write zip.
+            (cd "$stage" && 7z a -tzip -bd "../$archive" watt-start.exe)
+          else
+            mkdir -p "$stage/watt-start"
+            cp "$src" "$stage/watt-start/watt-start"
+            chmod 755 "$stage/watt-start/watt-start"
+            cp packaging/watt-start.desktop "$stage/watt-start/watt-start.desktop"
+            cp packaging/watt-start.png "$stage/watt-start/watt-start.png"
+            cp packaging/install.sh "$stage/watt-start/install.sh"
+            chmod 755 "$stage/watt-start/install.sh"
+            tar -czf "$archive" -C "$stage" watt-start
+          fi
+          rm -rf "$stage"
+          test -f "$archive"
+          echo "bare=${bare}" >> "$GITHUB_OUTPUT"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            watt-start/${{ steps.package.outputs.bare }}
+            watt-start/${{ steps.package.outputs.archive }}
+
+  publish:
+    name: publish
+    needs: [version, build]
+    # 24.04 rather than 22.04: jammy has no minisign package. This job builds
+    # only xtask, so the glibc baseline of the release binaries is unaffected.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: watt-start
+    steps:
+      - name: Checkout watt-start
+        uses: actions/checkout@v4
+        with:
+          path: watt-start
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Checkout pwc-package-manager
+        uses: actions/checkout@v4
+        with:
+          repository: gusahlg/pwc-package-manager
+          ref: ${{ env.PWC_REF }}
+          path: pwc-package-manager
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: watt-start
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: watt-start/dist
+          merge-multiple: true
+
+      - name: Release notes
+        id: notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ver="$VERSION"
+          tag="v${ver}"
+          body=""
+          # actions/checkout can leave a pushed annotated tag as a lightweight
+          # ref (actions/checkout#290). Fetch the tag object itself.
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" || true
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            body=$(git tag -l --format='%(contents:body)' "$tag" || true)
+          fi
+          if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ] && [ -f CHANGELOG.md ]; then
+            body=$(awk -v ver="$ver" '
+              function heading(line, v) {
+                return line ~ "^##[[:space:]]+\\[" v "\\]([^0-9]|$)" || line ~ "^##[[:space:]]+" v "([^0-9.]|$)"
+              }
+              heading($0, ver) { on = 1; next }
+              on && /^##[[:space:]]/ { exit }
+              on { print }
+            ' CHANGELOG.md)
+          fi
+          if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+            body="watt-start ${ver}"
+          fi
+          printf '%s\n' "$body" > release-notes.md
+          echo "path=watt-start/release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Copy installers
+        run: |
+          set -euo pipefail
+          cp packaging/install.sh packaging/install.ps1 dist/
+          chmod 755 dist/install.sh
+
+      - name: Write the update manifest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- manifest \
+            --version "$VERSION" \
+            --dist dist \
+            --notes-file release-notes.md
+
+      # The secret key file goes in MINISIGN_SECRET_KEY. If the key has a
+      # password, put it in MINISIGN_PASSWORD: minisign reads the password
+      # from stdin when stdin is not a terminal. A key made with
+      # `minisign -G -W` has no password and needs no second secret.
+      # See docs/releasing.md and packaging/update-key.pub.README.
+      - name: Sign the manifest
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not set. Publishing an unsigned watt-start-update.json."
+            echo "The launcher accepts it only while no public key is compiled in."
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          key=$(mktemp)
+          chmod 600 "$key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          # An empty password line is never read for a key without one.
+          printf '%s\n' "${MINISIGN_PASSWORD:-}" | minisign -S \
+            -s "$key" \
+            -m dist/watt-start-update.json \
+            -x dist/watt-start-update.json.minisig \
+            -t "watt-start ${VERSION}"
+          test -s dist/watt-start-update.json.minisig
+
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          : > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' \
+            | LC_ALL=C sort \
+            | while IFS= read -r file; do
+                sha256sum "$file" >> SHA256SUMS
+              done
+          test -s SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.notes.outputs.path }}
+          fail_on_unmatched_files: true
+          files: watt-start/dist/*
