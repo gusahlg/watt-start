@@ -465,7 +465,7 @@ impl App {
         let staged = self
             .staged_mods
             .get(&name)
-            .is_some_and(|mods| !mods.add.is_empty() || !mods.remove.is_empty());
+            .is_some_and(|mods| !mods.is_empty());
         let mut tabs_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(strip)

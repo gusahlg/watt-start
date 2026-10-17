@@ -477,3 +477,108 @@ fn mods_pending_900_scale_150() {
     app.set_scale_for_tests(1.5);
     shot_at("mods_pending_900_scale_150", egui::vec2(900.0, 600.0), app);
 }
+
+// ---- mods v2 ----
+
+#[test]
+fn mods_impact() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.stage_mod_add_for_tests("modded", "pwc.rivers");
+    app.stage_mod_remove_for_tests("modded", "pwc.soundscape");
+    app.stage_mod_remove_for_tests("modded", "pwc.ambient-audio");
+    app.mods_open_impact_for_tests("modded");
+    shot("mods_impact", app);
+}
+
+#[test]
+fn mods_browse_compat() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.mods_show_browse_for_tests("modded");
+    app.mods_set_search_for_tests("modded", "rail");
+    shot("mods_browse_compat", app);
+}
+
+#[test]
+fn mods_details() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.mods_select_for_tests("survival", "pwc.essentials", false);
+    shot("mods_details", app);
+}
+
+#[test]
+fn mods_details_narrow() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.mods_select_for_tests("survival", "pwc.essentials", true);
+    shot_at("mods_details_narrow", egui::vec2(900.0, 600.0), app);
+}
+
+#[test]
+fn mods_updates() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    shot("mods_updates", app);
+}
+
+#[test]
+fn mods_apply_split() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.stage_mod_add_for_tests("survival", "pwc.better-caves");
+    shot("mods_apply_split", app);
+}
+
+/// ↓ selects the first installed row, then Delete stages that mod for removal.
+#[test]
+fn mods_key_down_delete_stages_remove() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Delete);
+    harness.run();
+    assert_eq!(
+        harness.state().mods_staged_remove_for_tests("survival"),
+        vec!["pwc.essentials".to_owned()]
+    );
+}
+
+/// `/` moves focus to the mods search field.
+#[test]
+fn mods_slash_focuses_search() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::Slash);
+    harness.run();
+    assert!(
+        harness.get_by_label("Search mods").is_focused(),
+        "slash did not focus the mods search"
+    );
+}
+
+/// Escape clears the selected mod.
+#[test]
+fn mods_escape_clears_selection() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.mods_select_for_tests("survival", "pwc.essentials", false);
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    assert_eq!(
+        harness
+            .state()
+            .mods_selected_for_tests("survival")
+            .as_deref(),
+        Some("pwc.essentials")
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().mods_selected_for_tests("survival"), None);
+}
