@@ -12,6 +12,7 @@ mod toasts;
 mod welcome;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use egui::{CentralPanel, Panel};
@@ -53,24 +54,41 @@ impl ModPreset {
 }
 
 /// Which kind of source a dialog is configuring.
+///
+/// Managed and linked variants keep the binding fields the dialog does not edit
+/// (`engine_ref`, `mods_ref`, `repositories`) so Apply can put them back unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SourceChoice {
-    Managed { channel: String },
-    Linked { path: String },
+    /// Follow a game branch. `engine_ref` and `mods_ref` are `auto` for a new instance.
+    Managed {
+        channel: String,
+        engine_ref: String,
+        mods_ref: String,
+    },
+    /// Build a checkout on this machine. `repositories` empty means pwc's list.
+    Linked {
+        path: String,
+        repositories: Vec<PathBuf>,
+    },
+    /// Whatever checkout pwc itself is configured to use.
     PwcDefault,
 }
 
 impl SourceChoice {
     fn to_spec(&self) -> SourceSpec {
         match self {
-            SourceChoice::Managed { channel } => SourceSpec::Managed {
+            SourceChoice::Managed {
+                channel,
+                engine_ref,
+                mods_ref,
+            } => SourceSpec::Managed {
                 channel: channel.clone(),
-                engine_ref: watt_core::meta::AUTO.to_owned(),
-                mods_ref: watt_core::meta::AUTO.to_owned(),
+                engine_ref: engine_ref.clone(),
+                mods_ref: mods_ref.clone(),
             },
-            SourceChoice::Linked { path } => SourceSpec::Linked {
-                pwc_source: path.into(),
-                repositories: Vec::new(),
+            SourceChoice::Linked { path, repositories } => SourceSpec::Linked {
+                pwc_source: PathBuf::from(path),
+                repositories: repositories.clone(),
             },
             SourceChoice::PwcDefault => SourceSpec::PwcDefault,
         }
@@ -193,6 +211,8 @@ pub struct App {
     pub(crate) new_instance: Option<new_instance::NewInstanceState>,
     pub(crate) change_source: Option<new_instance::ChangeSourceState>,
     pub(crate) confirm: Option<Confirm>,
+    /// Duplicate dialog, when open.
+    pub(crate) duplicate: Option<dialogs::DuplicateState>,
 
     pub(crate) settings_draft: Settings,
     pub(crate) toasts: Vec<toasts::Toast>,
@@ -237,6 +257,7 @@ impl App {
             new_instance: None,
             change_source: None,
             confirm: None,
+            duplicate: None,
             settings_draft,
             toasts: Vec::new(),
             mods_browse_search: String::new(),
@@ -425,6 +446,7 @@ impl App {
 
         self.new_instance_dialog(ui.ctx());
         self.change_source_dialog(ui.ctx());
+        self.duplicate_dialog(ui.ctx());
         self.confirm_dialog(ui.ctx());
         self.draw_toasts(ui.ctx());
     }
@@ -593,8 +615,10 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             self.backend.refresh();
         }
-        let modal_open =
-            self.new_instance.is_some() || self.change_source.is_some() || self.confirm.is_some();
+        let modal_open = self.new_instance.is_some()
+            || self.change_source.is_some()
+            || self.duplicate.is_some()
+            || self.confirm.is_some();
         let typing = ctx.memory(|mem| mem.focused().is_some());
         if !modal_open
             && !typing
