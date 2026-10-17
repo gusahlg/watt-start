@@ -48,8 +48,20 @@ pub struct BranchInfo {
 const TAIL_LINES: usize = 20;
 
 /// A `git` command with the environment every call needs.
+///
+/// `-c` is before the subcommand, so a failure that quotes `args` still names the operation the
+/// caller asked for. `core.autocrlf` / `core.eol` keep snapshot bytes identical on Windows.
+/// `core.longpaths` matters only on Windows and is ignored elsewhere.
 fn base_command(args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::command("git");
+    cmd.args([
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.eol=lf",
+        "-c",
+        "core.longpaths=true",
+    ]);
     cmd.args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("LC_ALL", "C");
@@ -513,6 +525,7 @@ pub(crate) fn remove_dir_all_writable(dir: &Path) -> Result<()> {
     }
 }
 
+#[cfg(unix)]
 fn make_writable_recursive(dir: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     if !dir.is_dir() {
@@ -535,4 +548,44 @@ fn make_writable_recursive(dir: &Path) -> Result<()> {
         let _ = std::fs::set_permissions(dir, perm);
     }
     Ok(())
+}
+
+/// Clear the read-only bit git sets on objects. Reparse points (symlinks, junctions) are skipped
+/// so a link cannot walk the deletion out of this tree.
+#[cfg(windows)]
+fn make_writable_recursive(dir: &Path) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("cannot read {}", dir.display()))?;
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if is_reparse_point(&meta) {
+            continue;
+        }
+        if meta.is_dir() {
+            make_writable_recursive(&path)?;
+        } else {
+            let mut perm = meta.permissions();
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(&path, perm);
+        }
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(dir) {
+        let mut perm = meta.permissions();
+        perm.set_readonly(false);
+        let _ = std::fs::set_permissions(dir, perm);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
