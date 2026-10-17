@@ -16,10 +16,27 @@ pwc-manifest.workspace = true
 pwc-package.workspace = true
 pwc-store.workspace = true
 anyhow.workspace = true
+dunce.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# One windows-sys version, already in the lock via wgpu and friends. Features are only what
+# the process, doctor and console code calls.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

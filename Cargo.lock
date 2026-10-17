@@ -620,6 +620,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "ecolor"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3030,6 +3036,7 @@ name = "watt-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dunce",
  "libc",
  "pwc-builder",
  "pwc-instance",
@@ -3040,6 +3047,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3048,6 +3056,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dunce",
  "eframe",
  "egui",
  "egui_kittest",

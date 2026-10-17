@@ -2,7 +2,12 @@
 //!
 //! Without arguments it opens the GUI. `watt-start op ...` runs one op headless: the GUI runs
 //! every long operation this way, as a child process whose JSON event lines it reads
-//! (`--events json --request <json>`); people and scripts use the friendlier subcommands.
+//! (`--events json --request-stdin`, or `--request <json>` by hand); people and scripts use the
+//! friendlier subcommands.
+
+// Release builds on Windows are a GUI subsystem binary, so double-clicking does not open a
+// console. CLI subcommands attach the parent console themselves (see `cli_wants_console`).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod gui;
 
@@ -36,11 +41,17 @@ enum Command {
     /// Run one op from its JSON request (the launcher's worker protocol).
     Op {
         /// The request, as JSON (see `watt_core::ops::OpRequest`).
+        #[arg(long, conflicts_with = "request_stdin")]
+        request: Option<String>,
+        /// Read the request JSON from stdin until EOF. What the GUI spawns, so a long mod list
+        /// is not a command-line argument. `--request` remains the form to type by hand.
         #[arg(long)]
-        request: String,
+        request_stdin: bool,
         /// How to report.
         #[arg(long, value_enum, default_value_t = Events::Human)]
         events: Events,
+        #[command(subcommand)]
+        guard: Option<OpGuard>,
     },
     /// List instances.
     List,
@@ -94,6 +105,21 @@ enum Command {
     },
 }
 
+/// Internal: hold a game lock until a process exits. Not part of the public CLI.
+#[derive(Subcommand)]
+enum OpGuard {
+    /// Hold `game.lock` until `pid` exits, after writing `ok` to stdout.
+    #[command(hide = true, name = "game-guard")]
+    GameGuard {
+        /// The game's process id.
+        #[arg(long)]
+        pid: u32,
+        /// `game.lock` to hold for the game's lifetime.
+        #[arg(long)]
+        lock: std::path::PathBuf,
+    },
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Events {
     /// Readable lines on stderr.
@@ -103,12 +129,30 @@ enum Events {
 }
 
 fn main() -> ExitCode {
+    // Before clap, and before anything prints: a GUI-subsystem binary has no stdout until this
+    // attaches the parent console. Skipped for the window, and a no-op when stdout is already a
+    // handle (the op child, whose stdout pipe is the JSON protocol).
+    if cli_wants_console() {
+        watt_core::process::attach_parent_console();
+    }
     let cli = Cli::parse();
     let result = match cli.command {
         None | Some(Command::Gui) => gui::run().map(|()| ExitCode::SUCCESS),
-        Some(Command::Op { request, events }) => serde_json::from_str::<OpRequest>(&request)
-            .context("invalid --request")
-            .and_then(|request| run_op(&request, events)),
+        Some(Command::Op {
+            request,
+            request_stdin,
+            events,
+            guard,
+        }) => match guard {
+            Some(OpGuard::GameGuard { pid, lock }) => {
+                watt_core::process::run_game_guard(pid, &lock).map(|()| ExitCode::SUCCESS)
+            }
+            None => read_request(request, request_stdin)
+                .and_then(|request| {
+                    serde_json::from_str::<OpRequest>(&request).context("invalid request")
+                })
+                .and_then(|request| run_op(&request, events)),
+        },
         Some(Command::List) => list().map(|()| ExitCode::SUCCESS),
         Some(Command::Doctor) => doctor().map(|()| ExitCode::SUCCESS),
         Some(Command::Create {
@@ -185,8 +229,39 @@ fn main() -> ExitCode {
     }
 }
 
+/// The window is the default and `watt-start gui` (unless that asks for help or the version).
+/// Everything else, including `--help`, is a CLI command and needs a console on Windows.
+fn cli_wants_console() -> bool {
+    let mut args = std::env::args_os().skip(1);
+    match args.next() {
+        None => false,
+        Some(arg) if arg == "gui" => args.any(|arg| {
+            matches!(
+                arg.to_string_lossy().as_ref(),
+                "--help" | "-h" | "--version" | "-V"
+            )
+        }),
+        Some(_) => true,
+    }
+}
+
+/// `--request <json>`, or the whole of stdin when `--request-stdin` was passed.
+fn read_request(request: Option<String>, request_stdin: bool) -> Result<String> {
+    if request_stdin {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+            .context("cannot read the op request from stdin")?;
+        Ok(buf)
+    } else {
+        request.context("pass --request <json> or --request-stdin")
+    }
+}
+
 /// Run one op with the chosen reporting, teeing a readable copy into the op's log file.
 fn run_op(request: &OpRequest, events: Events) -> Result<ExitCode> {
+    // Windows: a game launched by Play must not inherit this process's stdout/stderr pipes
+    // (they would keep the GUI's view of this op open until the game exits). No-op on Unix.
+    watt_core::process::make_std_handles_private();
     let paths = Paths::from_env()?;
     let settings = Settings::load(&paths.settings_file)?;
     let op_id = new_op_id();

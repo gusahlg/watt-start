@@ -1,17 +1,25 @@
 //! Running an op as a child process and reading its events: what the GUI uses.
 //!
-//! [`OpHandle::spawn`] starts `<exe> op --events json --request <json>` in a new process group
-//! with stdout piped (events) and stderr piped (anything the worker printed before its own
-//! capture started, or after it broke: forwarded as log lines). A reader thread parses envelopes
-//! into a channel; [`OpHandle::poll`] drains it into an [`OpView`]. [`OpHandle::cancel`] kills
-//! the whole process group (git, nix, cargo, rustc included).
+//! [`OpHandle::spawn`] starts `<exe> op --events json --request-stdin` and writes the request
+//! JSON to the child's stdin (so a long mod list is not a command-line argument). `op --request
+//! <json>` remains the hand-run form ([`OpRequest::to_args`]). Stdout is piped (events) and
+//! stderr is piped (anything the worker printed before its own capture started, or after it
+//! broke: forwarded as log lines). A reader thread parses envelopes into a channel;
+//! [`OpHandle::poll`] drains it into an [`OpView`].
+//!
+//! On Unix the child is its own process group and [`OpHandle::cancel`] sends SIGTERM, then
+//! SIGKILL after a grace period. On Windows the child is created suspended, assigned to a job
+//! object (`KILL_ON_JOB_CLOSE` and `BREAKAWAY_OK`) and then resumed; cancel calls
+//! `TerminateJobObject` immediately, because a windowless process has no console to take a
+//! soft signal. Neither path waits on the child while holding its mutex, so the GUI thread is
+//! not blocked by [`OpHandle::poll`] or [`OpHandle::running`].
 
 use std::io::{BufRead as _, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -27,7 +35,11 @@ const CANCEL_GRACE: Duration = Duration::from_secs(3);
 pub struct OpHandle {
     child: Arc<Mutex<Child>>,
     /// The child's pid, which is also its process group id.
+    #[cfg(unix)]
     pgid: i32,
+    /// Kill-on-close job. The game and its guard break away; everything else dies with this handle.
+    #[cfg(windows)]
+    job: Arc<crate::process::Job>,
     rx: Receiver<Envelope>,
     cancelled: Arc<AtomicBool>,
 }
@@ -35,16 +47,62 @@ pub struct OpHandle {
 impl OpHandle {
     /// Spawn the worker. `exe` is normally `std::env::current_exe()`.
     pub fn spawn(exe: &Path, request: &OpRequest) -> Result<Self> {
-        let mut command = Command::new(exe);
+        Self::spawn_with_nice(exe, request, None)
+    }
+
+    /// [`OpHandle::spawn`], lowering the child's priority when `build_nice` is set and the
+    /// request is a build. `None` and non-build ops (Play included) stay at normal priority.
+    /// On Windows the class is a creation flag, so cargo and rustc inherit it. On Unix the op
+    /// applies `set_nice` itself; the value is ignored here.
+    pub fn spawn_with_nice(
+        exe: &Path,
+        request: &OpRequest,
+        build_nice: Option<i32>,
+    ) -> Result<Self> {
+        let json = serde_json::to_string(request).context("cannot encode the op request")?;
+        #[cfg(windows)]
+        let flags = crate::process::worker_creation_flags(lowered_priority(request, build_nice));
+        #[cfg(not(windows))]
+        let flags = {
+            let _ = (request, build_nice);
+            0
+        };
+        let mut command = crate::process::command_with_flags(exe, flags);
         command
-            .args(request.to_args())
-            .stdin(Stdio::null())
+            .args(["op", "--events", "json", "--request-stdin"])
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         crate::process::new_process_group(&mut command);
+        #[cfg(windows)]
+        let job = Arc::new(crate::process::create_job()?);
         let mut child = command
             .spawn()
             .with_context(|| format!("cannot start {}", exe.display()))?;
+        // Resume before anyone writes the request. A suspended child cannot drain the pipe, so
+        // writing a request larger than the buffer first would deadlock.
+        #[cfg(windows)]
+        if let Err(err) = crate::process::assign_and_resume(&child, &job) {
+            // The process was terminated inside `assign_and_resume`. Reap without blocking the
+            // GUI thread if it does not exit; dropping `job` then kills whatever is left.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if child.try_wait().ok().flatten().is_some()
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return Err(err);
+        }
+
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = stdin.write_all(json.as_bytes());
+            // Dropping `stdin` is the EOF the child reads to.
+        });
 
         let stdout = child.stdout.take().expect("stdout is piped");
         let stderr = child.stderr.take().expect("stderr is piped");
@@ -82,10 +140,14 @@ impl OpHandle {
             }
         });
 
+        #[cfg(unix)]
         let pgid = child.id() as i32;
         Ok(Self {
             child: Arc::new(Mutex::new(child)),
+            #[cfg(unix)]
             pgid,
+            #[cfg(windows)]
+            job,
             rx,
             cancelled: Arc::new(AtomicBool::new(false)),
         })
@@ -109,11 +171,11 @@ impl OpHandle {
                         changed = true;
                     }
                     // Both reader threads only exit once their pipe closes, which only happens
-                    // once the child itself has exited (or exec'd away its own copies): it is
-                    // safe, and immediate, to reap it here instead of leaving it a zombie until
-                    // the launcher exits.
-                    if let Ok(mut child) = self.child.lock() {
-                        let _ = child.wait();
+                    // once the child itself has exited (or exec'd away its own copies). Reap with
+                    // `try_wait` so this never blocks the GUI thread. If the cancel thread holds
+                    // the mutex for a moment, the next poll (or drop) reaps instead.
+                    if let Ok(mut child) = self.child.try_lock() {
+                        let _ = child.try_wait();
                     }
                     break;
                 }
@@ -122,52 +184,105 @@ impl OpHandle {
         changed
     }
 
-    /// Kill the op's process group (SIGTERM, SIGKILL after 3 s) on a background thread. The
-    /// child is only locked for an instant at a time, so [`OpHandle::running`] never waits.
+    /// Stop the op on a background thread.
+    ///
+    /// Unix: SIGTERM, then SIGKILL after [`CANCEL_GRACE`]. Windows: `TerminateJobObject`
+    /// immediately (there is no console to deliver a soft signal), then the same grace period
+    /// to let the leader exit. The child mutex is only ever `try_lock`ed, so [`OpHandle::poll`]
+    /// and [`OpHandle::running`] do not wait behind this thread.
     pub fn cancel(&mut self) {
-        use crate::process::{Signal, signal_group};
         self.cancelled.store(true, Ordering::SeqCst);
         let child = Arc::clone(&self.child);
+        #[cfg(unix)]
         let pgid = self.pgid;
+        #[cfg(windows)]
+        let job = Arc::clone(&self.job);
         std::thread::spawn(move || {
-            let exited = || {
-                child
-                    .lock()
-                    .map(|mut c| !matches!(c.try_wait(), Ok(None)))
-                    .unwrap_or(true)
-            };
-            signal_group(pgid, Signal::Term);
+            #[cfg(unix)]
+            {
+                use crate::process::{Signal, signal_group};
+                signal_group(pgid, Signal::Term);
+                let deadline = std::time::Instant::now() + CANCEL_GRACE;
+                while !try_exited(&child) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                // Also when the leader exited: nothing it started may survive it.
+                signal_group(pgid, Signal::Kill);
+            }
+            #[cfg(windows)]
+            {
+                job.terminate();
+            }
             let deadline = std::time::Instant::now() + CANCEL_GRACE;
-            while !exited() && std::time::Instant::now() < deadline {
+            while !try_exited(&child) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(50));
             }
-            // Also when the leader exited: nothing it started may survive it.
-            signal_group(pgid, Signal::Kill);
-            if let Ok(mut c) = child.lock() {
-                let _ = c.wait();
+            // Best-effort reap. `try_wait` does not block; give the lock a moment if poll holds it.
+            for _ in 0..40 {
+                if let Ok(mut child) = child.try_lock() {
+                    let _ = child.try_wait();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
         });
     }
 
-    /// Whether the child is still running.
+    /// Whether the child is still running. A mutex that is busy (the cancel thread looked at the
+    /// same moment) counts as running, so the GUI does not treat a live op as finished.
     pub fn running(&mut self) -> bool {
-        match self.child.lock() {
+        match self.child.try_lock() {
             Ok(mut child) => matches!(child.try_wait(), Ok(None)),
-            Err(_) => false,
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Poisoned(_)) => false,
         }
+    }
+}
+
+/// `true` when the child has exited or the mutex is poisoned. `false` when it is still running
+/// or another thread holds the mutex right now (the caller keeps waiting).
+fn try_exited(child: &Mutex<Child>) -> bool {
+    match child.try_lock() {
+        Ok(mut child) => !matches!(child.try_wait(), Ok(None)),
+        Err(TryLockError::WouldBlock) => false,
+        Err(TryLockError::Poisoned(_)) => true,
+    }
+}
+
+/// Build-like ops inherit a lowered priority. Play stays normal so the game does not.
+#[cfg(windows)]
+fn lowered_priority(request: &OpRequest, build_nice: Option<i32>) -> Option<i32> {
+    let nice = build_nice?;
+    match request {
+        OpRequest::Build { .. }
+        | OpRequest::Update { .. }
+        | OpRequest::Mods { .. }
+        | OpRequest::Create { .. }
+        | OpRequest::Rollback { .. }
+        | OpRequest::SetSource { .. } => Some(nice),
+        _ => None,
     }
 }
 
 impl Drop for OpHandle {
     /// Guarantee the child is reaped even if the caller never calls [`OpHandle::poll`] again
     /// (or never did at all) after losing interest in this handle: a detached thread waits on it,
-    /// so this never blocks the dropping thread even if the child is still running.
+    /// so this never blocks the dropping thread even if the child is still running. On Windows
+    /// the job handle is dropped with the struct, and `KILL_ON_JOB_CLOSE` ends anything still in
+    /// the job before that wait returns.
     fn drop(&mut self) {
         let child = Arc::clone(&self.child);
         std::thread::spawn(move || {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.wait();
-            }
+            let mut child = loop {
+                match child.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(TryLockError::WouldBlock) => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                }
+            };
+            let _ = child.wait();
         });
     }
 }
@@ -188,7 +303,9 @@ fn synthetic_log(last_op_id: &Mutex<String>, line: String) -> Envelope {
     }
 }
 
-#[cfg(test)]
+/// Shell scripts and `/proc` reap checks. A Windows client test (job kill, guard ack) needs a
+/// machine to run on; audit item 45.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::events::{OpKind, OpOutcome, Phase};

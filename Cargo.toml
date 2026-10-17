@@ -9,7 +9,7 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 authors = ["Project Watt Cubed contributors"]
 repository = "https://github.com/gusahlg/watt-start"
-rust-version = "1.90"
+rust-version = "1.95"
 
 [workspace.dependencies]
 watt-core = { path = "crates/watt-core" }
@@ -24,13 +24,15 @@ pwc-store = { path = "../pwc-package-manager/crates/pwc-store" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+dunce = "1"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 toml = "0.9"
 
-# The GUI: egui on wgpu. wgpu picks Vulkan, which every machine that runs the game has.
+# The GUI: egui on wgpu. The launcher selects Vulkan on Linux and DirectX 12 (then Vulkan) on
+# Windows; see `gui::configure_wgpu`. The game's Vulkan requirement is a doctor check.
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
 egui = "0.37"
 

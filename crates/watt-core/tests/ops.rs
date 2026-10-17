@@ -198,6 +198,11 @@ fn update_picks_up_a_newer_package_version() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows Play needs `watt-start op game-guard` as the current executable; a watt-core \
+              test binary is not watt-start"
+)]
 fn play_launches_detached_with_the_right_environment_and_refuses_while_running() {
     let world = World::new();
     world.add_package("pwc.hotbar", "1.0.0", &[]);
@@ -672,6 +677,11 @@ fn duplicate_refuses_an_existing_destination_and_leaves_no_staging_dir() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows Play needs `watt-start op game-guard` as the current executable; a watt-core \
+              test binary is not watt-start"
+)]
 fn duplicate_refuses_to_copy_worlds_while_the_source_is_running() {
     let world = World::new();
     world.add_package("pwc.hotbar", "1.0.0", &[]);

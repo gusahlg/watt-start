@@ -6,6 +6,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
+/// What [`FileLock::state`] found. An error from that function is not a state: the caller cannot
+/// tell, and must treat the lock as busy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockState {
+    /// The file is missing, or the lock could be taken (and was released again).
+    Free,
+    /// Someone else holds it.
+    Held,
+}
+
 /// A held lock.
 #[derive(Debug)]
 pub struct FileLock {
@@ -40,9 +50,32 @@ impl FileLock {
         }
     }
 
+    /// Whether the lock is free or held, without keeping it.
+    ///
+    /// A missing file is [`LockState::Free`] and is not created. `try_acquire` succeeding is
+    /// free (the probe lock is dropped before returning). `Ok(None)` is held. An error is
+    /// returned as-is: opening the file can fail with a sharing violation even when the lock
+    /// itself would only say "busy", and that must not look like "free".
+    pub fn state(path: &Path) -> Result<LockState> {
+        if !path.exists() {
+            return Ok(LockState::Free);
+        }
+        match Self::try_acquire(path)? {
+            Some(held) => {
+                drop(held);
+                Ok(LockState::Free)
+            }
+            None => Ok(LockState::Held),
+        }
+    }
+
     /// Whether someone holds the lock right now (without keeping it).
+    ///
+    /// Fail closed: a missing file is free, a held lock is held, and any error (the lock could
+    /// not be probed) counts as held so callers refuse to start a second game or delete an
+    /// instance they cannot prove is idle. The normal answers are unchanged.
     pub fn is_held(path: &Path) -> bool {
-        path.exists() && matches!(Self::try_acquire(path), Ok(None))
+        !matches!(Self::state(path), Ok(LockState::Free))
     }
 
     /// The lock file.
@@ -75,6 +108,7 @@ mod tests {
         let first = FileLock::try_acquire(&path).unwrap().expect("free");
         assert!(FileLock::try_acquire(&path).unwrap().is_none());
         assert!(FileLock::is_held(&path));
+        assert_eq!(FileLock::state(&path).unwrap(), LockState::Held);
         drop(first);
         // Another test thread forking a child can hold a copy of the descriptor until the child
         // execs (flock locks follow the open file description), so allow a moment.
