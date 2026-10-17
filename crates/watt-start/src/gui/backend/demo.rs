@@ -10,8 +10,8 @@ use pwc_manifest::{
 use watt_core::catalog::{AvailableMod, GameInfo, InstanceCard, PackageCard};
 use watt_core::doctor::{Check, Level};
 use watt_core::events::{
-    Change, Commit, Envelope, Event, OpKind, OpOutcome, PROTOCOL, Phase, PhaseOutcome, Recovery,
-    RepoLog,
+    Change, Commit, Envelope, Event, LogStream, OpKind, OpOutcome, PROTOCOL, Phase, PhaseOutcome,
+    Recovery, RepoLog,
 };
 use watt_core::git::BranchInfo;
 use watt_core::meta::{Binding, BuiltGame, Generation, LastOp, Meta, Pin};
@@ -1204,6 +1204,9 @@ pub struct DemoBackend {
     mods_catalog: Vec<AvailableMod>,
     doctor: Vec<Check>,
     next_op_id: u64,
+    /// When non-zero, [`DemoBackend::start_op`] plays a running build with this many log lines
+    /// already due. Only [`DemoBackend::stress`] sets it.
+    stress_log_lines: usize,
 }
 
 impl DemoBackend {
@@ -1390,6 +1393,7 @@ impl DemoBackend {
             mods_catalog,
             doctor,
             next_op_id: 1,
+            stress_log_lines: 0,
         }
     }
 
@@ -1403,6 +1407,103 @@ impl DemoBackend {
             ..Self::new()
         }
     }
+
+    /// A large fixture for the frame-cost harness: `instances` sidebar rows, `mods` catalogue
+    /// entries, and a build op whose log already holds `log_lines` lines.
+    ///
+    /// Animations and the startup update check are off, so a stepped harness measures layout
+    /// rather than a spinner. Only the perf test calls this.
+    #[allow(dead_code)]
+    pub fn stress(instances: usize, mods: usize, log_lines: usize) -> Self {
+        let now = watt_core::paths::now_secs();
+        let mut settings = Settings::default();
+        settings.check_updates_on_start = false;
+        settings.appearance.animations = false;
+        Self {
+            settings,
+            instances: (0..instances).map(|i| stress_entry(i, now)).collect(),
+            updates: BTreeMap::new(),
+            mods_catalog: (0..mods).map(stress_mod).collect(),
+            doctor: Vec::new(),
+            next_op_id: 1,
+            stress_log_lines: log_lines,
+        }
+    }
+}
+
+/// One managed instance with a single ready generation. Names are `s00`, `s01`, …
+#[allow(dead_code)]
+fn stress_entry(index: usize, now: u64) -> InstanceEntry {
+    let name = format!("s{index:02}");
+    let meta = Meta {
+        format: 1,
+        display_name: Some(format!("Instance {index}")),
+        color: None,
+        group: (index >= 3 && index % 5 == 0).then(|| "Bench".to_owned()),
+        favorite: index < 3,
+        notes: String::new(),
+        created: Some(now.saturating_sub(86_400)),
+        last_played: None,
+        source: Binding::Managed {
+            channel: "main".into(),
+            engine_ref: watt_core::meta::AUTO.into(),
+            mods_ref: watt_core::meta::AUTO.into(),
+            pin: Some(pin("main", &name)),
+        },
+        generations: vec![generation(1, now, "0.6.1", &name, true)],
+        last_op: None,
+    };
+    let last_good = meta.last_good().cloned();
+    InstanceEntry {
+        card: InstanceCard {
+            name: name.clone(),
+            dir: PathBuf::from(format!("/var/lib/pwc/instances/{name}")),
+            manifest: InstanceManifest::new(
+                InstanceName::parse(&name).expect("stress instance name"),
+                VersionReq::STAR,
+            ),
+            meta,
+            lock: None,
+            packages: Vec::new(),
+            game: GameInfo {
+                version: Some("0.6.1".into()),
+                api: Some("0.4.2".into()),
+                revision: Some(fake_sha(&format!("{name}-rev"))),
+                dirty: false,
+                source_dir: Some(PathBuf::from(format!("/var/lib/pwc/sources/v1/{name}"))),
+                branch: Some("main".into()),
+                engine_revision: Some(fake_sha(&format!("{name}-engine"))),
+                mods_revision: Some(fake_sha(&format!("{name}-mods"))),
+                environment: Some(format!("sha256:{}", fake_sha(&name))),
+            },
+            active: index == 0,
+            problems: Vec::new(),
+        },
+        status: InstanceStatus {
+            readiness: Readiness::Ready {
+                game: PathBuf::from(format!("/var/lib/pwc/cache/{name}/game")),
+            },
+            busy: false,
+            running: None,
+            last_good,
+        },
+    }
+}
+
+#[allow(dead_code)]
+fn stress_mod(index: usize) -> AvailableMod {
+    let id = format!("pwc.stress-{index}");
+    let name = format!("Stress Mod {index}");
+    available(
+        &id,
+        &name,
+        "1.0.0",
+        "mod",
+        "Generated catalogue row for the frame-cost harness.",
+        &["worldgen"],
+        &[],
+        &[],
+    )
 }
 
 impl Backend for DemoBackend {
@@ -1486,6 +1587,9 @@ impl Backend for DemoBackend {
     fn start_op(&mut self, request: OpRequest) -> RunningOp {
         let op_id = format!("demo-{}", self.next_op_id);
         self.next_op_id += 1;
+        if self.stress_log_lines > 0 {
+            return RunningOp::Demo(DemoOp::stress(op_id, &request, self.stress_log_lines));
+        }
         let fail = request.instance() == Some("flaky-build");
         RunningOp::Demo(DemoOp::new(op_id, &request, fail))
     }
@@ -1607,6 +1711,44 @@ impl DemoOp {
     /// Ask the (simulated) op to stop.
     pub fn cancel(&mut self) {
         self.cancelled = true;
+    }
+
+    /// A build that is already in Compile, with `log_lines` tool lines due immediately, and
+    /// that never finishes. The frame-cost harness opens the Forge and the Log tab on it.
+    #[allow(dead_code)]
+    pub fn stress(op_id: String, request: &OpRequest, log_lines: usize) -> Self {
+        let instance = request.instance().map(str::to_owned);
+        let mut timeline = vec![
+            (0, started(OpKind::Build, instance, &[Phase::Compile])),
+            (0, phase(Phase::Compile, "Compiling")),
+            (
+                0,
+                Event::Progress {
+                    phase: Phase::Compile,
+                    done: 40,
+                    total: Some(100),
+                    detail: "watt_stress".into(),
+                },
+            ),
+        ];
+        timeline.reserve(log_lines);
+        for i in 0..log_lines {
+            timeline.push((
+                0,
+                Event::Log {
+                    stream: LogStream::Tool,
+                    line: format!("compiling crate {i}"),
+                },
+            ));
+        }
+        Self {
+            op_id,
+            started: Instant::now(),
+            timeline,
+            next: 0,
+            cancelled: false,
+            finished: false,
+        }
     }
 }
 
