@@ -4,6 +4,7 @@
 //! parent's; this tab does not add its own inset.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use egui::{
     Align, Color32, CursorIcon, FontId, Id, Layout, Rect, Sense, Stroke, TextFormat, Ui, UiBuilder,
@@ -100,10 +101,13 @@ enum Catalog {
 }
 
 impl Catalog {
-    fn from_loaded(loaded: Loaded<(Vec<AvailableMod>, Vec<String>)>) -> Self {
+    fn from_loaded(loaded: Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>) -> Self {
         match loaded {
             Loaded::Idle | Loaded::Loading => Self::Pending,
-            Loaded::Ready((mods, warnings)) => Self::Ready { mods, warnings },
+            Loaded::Ready(data) => {
+                let (mods, warnings) = (*data).clone();
+                Self::Ready { mods, warnings }
+            }
             Loaded::Err(message) => Self::Failed(message),
         }
     }

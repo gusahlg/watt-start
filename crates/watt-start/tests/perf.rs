@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 800.0);
 const WARMUP: usize = 10;
@@ -177,8 +178,10 @@ fn frame_cost() {
 fn repaint_idle_overview_settles() {
     let mut app = gui::App::for_snapshot_tests();
     app.show_instance_overview("survival");
-    // The startup-check spinner asks for another frame. This test is the idle overview.
+    // The first frame starts the update check unless this is off, and that check (or its
+    // spinner) asks for another frame. This test is the idle overview.
     app.startup_check = None;
+    app.settings_draft.check_updates_on_start = false;
     let mut harness = harness(app);
     harness.try_run().expect("idle overview settles");
 }
@@ -197,5 +200,24 @@ fn repaint_running_op_is_coalesced() {
     assert!(
         delay >= Duration::from_millis(100),
         "running op repaint delay {delay:?} is under 100 ms"
+    );
+}
+
+#[test]
+fn log_tab_lays_out_only_visible_rows() {
+    // The Log tab sticks to the bottom and lays out only the rows in view.
+    let mut app = gui::App::with_backend(Box::new(gui::backend::DemoBackend::stress(1, 0, 500)));
+    app.start_op_for_tests("s00", build_request("s00"));
+    app.dismiss_op("s00");
+    app.show_instance_log("s00");
+    let mut harness = harness(app);
+    harness.run_steps(4);
+    assert!(
+        harness.query_by_label("compiling crate 499").is_some(),
+        "the last log line is on screen"
+    );
+    assert!(
+        harness.query_by_label("compiling crate 0").is_none(),
+        "rows scrolled out of view are not laid out"
     );
 }

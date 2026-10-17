@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use pwc_manifest::{
@@ -1199,9 +1200,11 @@ fn extra_catalog() -> Vec<AvailableMod> {
 /// The demo backend.
 pub struct DemoBackend {
     settings: Settings,
-    instances: Vec<InstanceEntry>,
+    instances: Vec<Arc<InstanceEntry>>,
     updates: BTreeMap<String, Vec<RepoLog>>,
     mods_catalog: Vec<AvailableMod>,
+    /// Built on the first [`Backend::available_mods`] call so later frames clone an `Arc`.
+    mods_ready: Option<Arc<(Vec<AvailableMod>, Vec<String>)>>,
     doctor: Vec<Check>,
     next_op_id: u64,
     /// When non-zero, [`DemoBackend::start_op`] plays a running build with this many log lines
@@ -1220,7 +1223,7 @@ impl DemoBackend {
             if let Some(u) = f.updates.clone() {
                 updates.insert(name, u);
             }
-            instances.push(build_entry(f, now));
+            instances.push(Arc::new(build_entry(f, now)));
         }
 
         let mut mods_catalog = vec![
@@ -1391,6 +1394,7 @@ impl DemoBackend {
             instances,
             updates,
             mods_catalog,
+            mods_ready: None,
             doctor,
             next_op_id: 1,
             stress_log_lines: 0,
@@ -1416,14 +1420,23 @@ impl DemoBackend {
     #[allow(dead_code)]
     pub fn stress(instances: usize, mods: usize, log_lines: usize) -> Self {
         let now = watt_core::paths::now_secs();
-        let mut settings = Settings::default();
-        settings.check_updates_on_start = false;
-        settings.appearance.animations = false;
+        let defaults = Settings::default();
+        let settings = Settings {
+            check_updates_on_start: false,
+            appearance: watt_core::settings::Appearance {
+                animations: false,
+                ..defaults.appearance.clone()
+            },
+            ..defaults
+        };
         Self {
             settings,
-            instances: (0..instances).map(|i| stress_entry(i, now)).collect(),
+            instances: (0..instances)
+                .map(|i| Arc::new(stress_entry(i, now)))
+                .collect(),
             updates: BTreeMap::new(),
             mods_catalog: (0..mods).map(stress_mod).collect(),
+            mods_ready: None,
             doctor: Vec::new(),
             next_op_id: 1,
             stress_log_lines: log_lines,
@@ -1439,7 +1452,7 @@ fn stress_entry(index: usize, now: u64) -> InstanceEntry {
         format: 1,
         display_name: Some(format!("Instance {index}")),
         color: None,
-        group: (index >= 3 && index % 5 == 0).then(|| "Bench".to_owned()),
+        group: (index >= 3 && index.is_multiple_of(5)).then(|| "Bench".to_owned()),
         favorite: index < 3,
         notes: String::new(),
         created: Some(now.saturating_sub(86_400)),
@@ -1519,7 +1532,7 @@ impl Backend for DemoBackend {
         false
     }
 
-    fn instances(&self) -> &[InstanceEntry] {
+    fn instances(&self) -> &[Arc<InstanceEntry>] {
         &self.instances
     }
 
@@ -1534,11 +1547,12 @@ impl Backend for DemoBackend {
     fn refresh(&mut self) {}
 
     fn edit_meta(&mut self, instance: &str, edit: MetaEdit) -> Result<Meta, String> {
-        let entry = self
+        let slot = self
             .instances
             .iter_mut()
             .find(|e| e.card.name == instance)
             .ok_or_else(|| "instance not found".to_owned())?;
+        let entry = Arc::make_mut(slot);
         match edit {
             MetaEdit::DisplayName(v) => {
                 entry.card.meta.display_name = (!v.trim().is_empty()).then_some(v)
@@ -1551,8 +1565,13 @@ impl Backend for DemoBackend {
         Ok(entry.card.meta.clone())
     }
 
-    fn available_mods(&mut self, _instance: &str) -> Loaded<(Vec<AvailableMod>, Vec<String>)> {
-        Loaded::Ready((self.mods_catalog.clone(), Vec::new()))
+    fn available_mods(&mut self, _instance: &str) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
+        if self.mods_ready.is_none() {
+            let ready = Arc::new((self.mods_catalog.clone(), Vec::new()));
+            self.mods_ready = Some(ready);
+        }
+        let ready = self.mods_ready.as_ref().expect("inserted above").clone();
+        Loaded::Ready(ready)
     }
 
     fn branches(&mut self) -> Loaded<Vec<BranchInfo>> {
@@ -1605,6 +1624,7 @@ pub struct DemoOp {
     next: usize,
     cancelled: bool,
     finished: bool,
+    waker: Option<watt_core::client::OpWaker>,
 }
 
 impl DemoOp {
@@ -1626,7 +1646,18 @@ impl DemoOp {
             next: 0,
             cancelled: false,
             finished: false,
+            waker: None,
         }
+    }
+
+    /// Remember how to wake egui. The demo timeline is still clock-driven: the UI polls it.
+    pub fn set_waker(&mut self, waker: watt_core::client::OpWaker) {
+        self.waker = Some(waker);
+    }
+
+    /// Whether [`DemoOp::set_waker`] has been called.
+    pub fn has_waker(&self) -> bool {
+        self.waker.is_some()
     }
 
     /// An op that failed before it could even start (e.g. `current_exe` was unavailable). Only
@@ -1663,6 +1694,13 @@ impl DemoOp {
             next: 0,
             cancelled: false,
             finished: false,
+            waker: None,
+        }
+    }
+
+    fn wake(&self, kind: watt_core::client::OpWake) {
+        if let Some(waker) = &self.waker {
+            waker(kind);
         }
     }
 
@@ -1683,13 +1721,19 @@ impl DemoOp {
                     duration_ms: elapsed,
                 },
             };
-            view.apply(&env);
+            view.apply_owned(env);
             self.finished = true;
+            self.wake(watt_core::client::OpWake::Immediate);
             return true;
         }
         let mut changed = false;
+        let mut immediate = false;
         while self.next < self.timeline.len() && self.timeline[self.next].0 <= elapsed {
             let (t_ms, event) = self.timeline[self.next].clone();
+            immediate |= matches!(
+                watt_core::client::op_wake(&event),
+                watt_core::client::OpWake::Immediate
+            );
             let is_finish = matches!(event, Event::OpFinished { .. });
             let env = Envelope {
                 protocol: PROTOCOL,
@@ -1698,12 +1742,19 @@ impl DemoOp {
                 t_ms,
                 event,
             };
-            view.apply(&env);
+            view.apply_owned(env);
             changed = true;
             self.next += 1;
             if is_finish {
                 self.finished = true;
             }
+        }
+        if changed {
+            self.wake(if immediate {
+                watt_core::client::OpWake::Immediate
+            } else {
+                watt_core::client::OpWake::Coalesce
+            });
         }
         changed
     }
@@ -1748,6 +1799,7 @@ impl DemoOp {
             next: 0,
             cancelled: false,
             finished: false,
+            waker: None,
         }
     }
 }
