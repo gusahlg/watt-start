@@ -277,7 +277,7 @@ struct ForgeLayout {
 const CUBE_MIN: f32 = 112.0;
 
 fn forge_layout(avail_y: f32) -> ForgeLayout {
-    let ideal = (avail_y * 0.34).clamp(160.0, 300.0);
+    let ideal = (avail_y * 0.42).clamp(160.0, 340.0);
     // Status + stepper + buttons + collapsed log, including the frame margins.
     // Measured from the spacious 980×600 render and padded so a couple of pixels
     // of rounding cannot grow a scrollbar.
@@ -780,8 +780,9 @@ fn diffuse_for(face: usize, yaw: f32, tilt: f32) -> f32 {
 /// Scale that keeps the silhouette inside the band, and never above the spec size.
 fn cube_scale(rect: Rect) -> f32 {
     let short = rect.width().min(rect.height());
-    let spec = (short * 0.14).clamp(14.0, 48.0);
-    let fitted = (rect.height() - 36.0) / vertical_extent();
+    let spec = (short * 0.2).clamp(14.0, 64.0);
+    // Leave room above the cube for the Link embers.
+    let fitted = (rect.height() - 72.0) / vertical_extent();
     spec.min(fitted.max(1.0))
 }
 
