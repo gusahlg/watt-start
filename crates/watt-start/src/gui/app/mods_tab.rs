@@ -36,6 +36,14 @@ pub(crate) struct ModsTabState {
     views: HashMap<String, InstanceModsUi>,
 }
 
+impl ModsTabState {
+    /// Whether the Mods tab of `instance` currently lists libraries (the header's mod count
+    /// follows it).
+    pub(crate) fn shows_libraries(&self, instance: &str) -> bool {
+        self.views.get(instance).is_some_and(|v| v.show_libraries)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct InstanceModsUi {
     /// 0 = Installed, 1 = Browse.

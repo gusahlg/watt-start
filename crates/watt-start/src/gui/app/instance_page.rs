@@ -97,7 +97,7 @@ impl App {
             .size()
             .y;
         let meta = entry
-            .map(|e| meta_line(e, mod_count(e, self.mods_show_libraries)))
+            .map(|e| meta_line(e, mod_count(e, self.mods_ui.shows_libraries(&e.card.name))))
             .unwrap_or_else(|| pending_meta(self.ops.get(name).map(OpSlot::kind)));
         let meta_h = ui
             .painter()
@@ -401,7 +401,7 @@ impl App {
         let (strip_outer, _) =
             ui.allocate_exact_size(egui::vec2(strip_w, 40.0), egui::Sense::hover());
         let strip = strip_outer.shrink2(egui::vec2(24.0, 0.0));
-        let count = mod_count(entry, self.mods_show_libraries);
+        let count = mod_count(entry, self.mods_ui.shows_libraries(&entry.card.name));
         let staged = self
             .staged_mods
             .get(&name)
