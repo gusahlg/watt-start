@@ -1595,6 +1595,7 @@ const ICON_CUBE_SCALE: f32 = 0.82;
 ///
 /// `busy` used to spin the cube and draw a crackle. That slash is gone; the sidebar paints
 /// [`widgets::cube`] instead. The flag stays so existing callers keep compiling.
+#[allow(dead_code)] // the app paints widgets::cube; the forge demo and snapshot test call this
 pub fn cube_icon(ui: &mut Ui, size: f32, color: Color32, busy: bool) -> Response {
     let _ = busy;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());

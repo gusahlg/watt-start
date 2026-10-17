@@ -139,7 +139,6 @@ pub(crate) struct OpSlot {
     /// What was asked: for Retry, and for which instances the op holds.
     pub request: OpRequest,
     /// When it started. A local clock: `view.t_ms` only moves when an event arrives.
-    #[allow(dead_code)] // transitional: read by the redesigned header and Forge
     pub started: Instant,
     /// Settlement has been handled.
     pub settled: bool,
@@ -498,7 +497,7 @@ impl App {
             }
         }
         for name in to_settle {
-            self.on_op_settled(&name);
+            self.on_op_settled(ctx, &name);
         }
         if any_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -507,7 +506,7 @@ impl App {
 
     /// Runs once per op, when its outcome arrives: harvest its changes, refresh the catalog,
     /// put failed mod changes back in the list, and toast when the op isn't on screen.
-    fn on_op_settled(&mut self, key: &str) {
+    fn on_op_settled(&mut self, ctx: &egui::Context, key: &str) {
         self.harvest_changes(key);
         self.backend.refresh();
         let Some(slot) = self.ops.get(key) else {
@@ -519,6 +518,11 @@ impl App {
         let title = slot.title.clone();
         let kind = slot.kind();
         let request = slot.request.clone();
+        let launched = slot
+            .view
+            .changes
+            .iter()
+            .any(|c| matches!(c, Change::Launched { .. }));
 
         // A failed mod change: give the user their staged list back (they can Discard it).
         if !succeeded
@@ -537,6 +541,12 @@ impl App {
         }
         if succeeded && let OpRequest::Remove { instance } = &request {
             self.forget_instance(instance);
+        }
+        // "Hide the launcher while the game runs": minimise once the game is up. (The game is
+        // detached, so the launcher can't bring itself back when it exits; minimising keeps
+        // it one click away instead of hiding it for good.)
+        if succeeded && launched && self.settings_draft.close_on_play {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 
         let looking_at = matches!(&self.main_view, Some(MainView::Instance(n)) if n == key);
@@ -722,7 +732,6 @@ impl App {
 
     /// Whether a launcher op is running on `instance` right now (including the source and the
     /// destination of a duplicate). An external `pwc` op shows up as `status.busy` instead.
-    #[allow(dead_code)] // transitional: used by the redesigned screens
     pub(crate) fn busy(&self, instance: &str) -> bool {
         self.running_op(instance).is_some()
     }

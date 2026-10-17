@@ -220,16 +220,17 @@ fn paint_toast(ui: &mut egui::Ui, toast: &Toast, width: f32) -> bool {
             let text_w = (width - 24.0 - 8.0 - 28.0).max(40.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                let galley = ui.painter().layout(
+                    toast.message.clone(),
+                    theme::regular(13.0),
+                    p.text,
+                    text_w,
+                );
                 ui.vertical(|ui| {
                     ui.set_width(text_w);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&toast.message)
-                                .font(theme::regular(13.0))
-                                .color(p.text),
-                        )
-                        .wrap(),
-                    );
+                    // Centre a short message on the 28-px dismiss button.
+                    ui.add_space(((28.0 - galley.size().y) / 2.0).max(0.0));
+                    ui.add(egui::Label::new(galley));
                 });
                 widgets::icon_button(ui, Icon::Cross, Variant::Ghost, 28.0, "Dismiss").clicked()
             })

@@ -682,6 +682,22 @@ pub fn choice_card(
     description: &str,
     extra: impl FnOnce(&mut Ui),
 ) -> Response {
+    choice_card_impl(ui, selected, title, description, Some(Box::new(extra)))
+}
+
+/// A [`choice_card`] with nothing more to show when selected (no empty slot under the text).
+pub fn choice_card_plain(ui: &mut Ui, selected: bool, title: &str, description: &str) -> Response {
+    choice_card_impl(ui, selected, title, description, None)
+}
+
+#[allow(clippy::type_complexity)]
+fn choice_card_impl(
+    ui: &mut Ui,
+    selected: bool,
+    title: &str,
+    description: &str,
+    extra: Option<Box<dyn FnOnce(&mut Ui) + '_>>,
+) -> Response {
     undo_disabled_fade(ui);
     let p = theme::palette(ui.ctx());
     let inner = ui.scope_builder(
@@ -712,7 +728,7 @@ pub fn choice_card(
                 });
                 ui.add_space(12.0);
             });
-            if selected {
+            if selected && let Some(extra) = extra {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
@@ -1226,13 +1242,7 @@ fn gallery_cards(ui: &mut Ui) {
             ui.label(theme::muted("Profile: release"));
         },
     );
-    choice_card(
-        ui,
-        false,
-        "Vanilla",
-        "No mods. The game, as shipped.",
-        |_| {},
-    );
+    choice_card_plain(ui, false, "Vanilla", "No mods. The game, as shipped.");
 
     section_heading(ui, "Rows");
     egui::Frame::new()
@@ -1670,13 +1680,21 @@ fn paint_spinner_arc(painter: &egui::Painter, rect: Rect, color: Color32, time: 
     let b = icon_box(rect);
     let stroke_w = icon_stroke(b.width());
     let start = time * std::f32::consts::TAU;
+    let radius = b.width() * 0.36;
+    // A faint full track under a short arc: reads as "loading" even when still (a long open
+    // arc on its own looks like the letter C).
+    painter.circle_stroke(
+        b.center(),
+        radius,
+        Stroke::new(stroke_w, theme::with_alpha(color, 55)),
+    );
     paint_arc(
         painter,
         b.center(),
-        b.width() * 0.36,
+        radius,
         stroke_w,
         start,
-        std::f32::consts::TAU * 0.72,
+        std::f32::consts::TAU * 0.3,
         color,
     );
 }

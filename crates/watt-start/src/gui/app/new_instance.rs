@@ -92,7 +92,7 @@ impl App {
             name: String::new(),
             name_edited: false,
             display_name: String::new(),
-            color: theme::WATT,
+            color: theme::VOLT,
             source: dialogs::fresh_managed(&channel),
             mod_preset: ModPreset::Essentials,
             build_now: true,
@@ -511,12 +511,11 @@ fn source_cards(
     {
         pick = Some(SourceKind::Linked);
     }
-    if widgets::choice_card(
+    if widgets::choice_card_plain(
         ui,
         current == SourceKind::PwcDefault,
         "pwc's configured checkout",
         "The checkout pwc is already using.",
-        |_| {},
     )
     .clicked()
     {
@@ -548,7 +547,7 @@ fn mod_cards(ui: &mut egui::Ui, preset: &mut ModPreset) -> bool {
             "The game as shipped, with no mods.",
         ),
     ] {
-        if widgets::choice_card(ui, *preset == choice, title, description, |_| {}).clicked() {
+        if widgets::choice_card_plain(ui, *preset == choice, title, description).clicked() {
             *preset = choice;
             picked = true;
         }

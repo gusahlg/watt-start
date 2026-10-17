@@ -75,31 +75,6 @@ pub const INSTANCE_PALETTE: [Color32; 10] = [
     Color32::from_rgb(0x4F, 0xE0, 0xC8), // Teal
 ];
 
-// transitional: removed once every screen uses the new tokens
-/// Old name for [`VOLT`].
-pub const WATT: Color32 = VOLT;
-/// Old name for [`ARC`].
-pub const CYAN: Color32 = ARC;
-/// Old name for [`OK`].
-pub const GOOD: Color32 = OK;
-/// Old name for [`BG_CANVAS`].
-#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
-pub const BG_0: Color32 = BG_CANVAS;
-/// Old name for [`BG_SURFACE`].
-#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
-pub const BG_1: Color32 = BG_SURFACE;
-/// Old name for [`BG_CARD`].
-#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
-pub const BG_2: Color32 = BG_CARD;
-/// Old name for [`BG_RAISED`].
-pub const BG_3: Color32 = BG_RAISED;
-/// Old name for [`TEXT_MUTED`].
-#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
-pub const MUTED: Color32 = TEXT_MUTED;
-/// Old name for [`TEXT_BRIGHT`].
-#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
-pub const BRIGHT: Color32 = TEXT_BRIGHT;
-
 /// Colours for one theme mode. Widgets read this so a light theme stays legible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
@@ -415,31 +390,8 @@ pub fn semibold(size: f32) -> FontId {
 }
 
 /// Hack (egui's monospace) at `size` points.
-#[allow(dead_code)] // public kit helper; screens pick it up in later phases
 pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
-}
-
-/// Page and dialog title (20 semibold, bright).
-pub fn title(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text)
-        .font(semibold(20.0))
-        .color(TEXT_BRIGHT)
-}
-
-/// Instance title (28 semibold, bright).
-#[allow(dead_code)] // transitional: screens paint palette text so a light theme stays legible
-pub fn heading(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text)
-        .font(semibold(28.0))
-        .color(TEXT_BRIGHT)
-}
-
-/// Card section heading (15 semibold, bright).
-pub fn subheading(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text)
-        .font(semibold(15.0))
-        .color(TEXT_BRIGHT)
 }
 
 /// Muted small text (12 regular).
