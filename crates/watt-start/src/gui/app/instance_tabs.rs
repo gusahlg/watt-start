@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use watt_core::events::OpKind;
 use watt_core::meta::{Binding, Generation, short};
@@ -13,19 +14,13 @@ use watt_core::status::Readiness;
 
 use super::toasts::ToastKind;
 use super::{App, InstanceTab, MainView};
-use crate::gui::backend::{InstanceEntry, MetaEdit};
+use crate::gui::backend::{InstanceEntry, Loaded, MetaEdit};
 use crate::gui::theme;
 use crate::gui::widgets::{self, Button, Size, Variant};
-
-/// How many trailing lines of an on-disk op log to keep in memory.
-const LOG_TAIL_LINES: usize = 400;
 
 /// Per-instance UI memory that has to survive frames.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InstanceUiState {
-    /// Last [`LOG_TAIL_LINES`] of a log file, keyed by path. An empty string is a cached miss
-    /// (the file was absent), so a missing log is not re-read every frame.
-    pub log_tails: HashMap<PathBuf, String>,
     /// The instance whose drafts were on screen. `None` until the first instance page, and when
     /// Settings or the welcome screen is showing. Used to commit drafts on navigation, including
     /// Ctrl+, which changes the view before the panels draw.
@@ -60,7 +55,7 @@ impl App {
         self.commit_field(
             instance,
             Draft::DisplayName,
-            &display_seed(&entry),
+            &display_seed(entry.as_ref()),
             MetaEdit::DisplayName,
         );
         self.commit_field(
@@ -142,8 +137,16 @@ impl App {
     pub(super) fn log_tab(&mut self, ui: &mut egui::Ui, entry: &InstanceEntry) {
         let name = entry.card.name.clone();
         let path = self.log_path(&name, entry);
-        let text = self.log_body(&name, entry);
-        let p = theme::palette(ui.ctx());
+        let in_memory = self.ops.contains_key(&name);
+        // File tails come back as lines. Join them only if Copy is clicked.
+        let file = if in_memory {
+            None
+        } else {
+            Some(match &path {
+                Some(path) => self.backend.log_tail(path),
+                None => Loaded::Ready(Arc::new(Vec::new())),
+            })
+        };
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -165,59 +168,29 @@ impl App {
                 .show(ui)
                 .clicked()
             {
+                let text = if in_memory {
+                    self.memory_log_text(&name)
+                } else {
+                    match file.as_ref() {
+                        Some(Loaded::Ready(lines)) => join_lines(lines.iter().map(String::as_str)),
+                        _ => String::new(),
+                    }
+                };
                 if text.is_empty() {
                     self.toast_kind(ToastKind::Info, "No log to copy");
                 } else {
-                    ui.ctx().copy_text(text.clone());
+                    ui.ctx().copy_text(text);
                     self.toast_kind(ToastKind::Ok, "Copied the log");
                 }
             }
         });
         ui.add_space(8.0);
 
-        let height = (ui.available_height() - 20.0).max(80.0);
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), height),
-            egui::Sense::hover(),
-        );
-        ui.painter().rect(
-            rect,
-            12.0,
-            p.bg_canvas,
-            egui::Stroke::new(1.0, p.line_soft),
-            egui::StrokeKind::Inside,
-        );
-        let inner = rect.shrink(12.0);
-        let mut log_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(inner)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        log_ui.set_clip_rect(inner);
-        egui::ScrollArea::vertical()
-            .id_salt(("log-box", name))
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(&mut log_ui, |ui| {
-                if text.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No log for this session yet.")
-                            .font(theme::regular(13.0))
-                            .color(p.text_muted),
-                    );
-                } else {
-                    for line in text.lines() {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(line)
-                                    .font(theme::mono(13.0))
-                                    .color(p.text),
-                            )
-                            .selectable(true),
-                        );
-                    }
-                }
-            });
+        if in_memory {
+            self.paint_memory_log(ui, &name);
+        } else if let Some(file) = file.as_ref() {
+            paint_file_log(ui, &name, file);
+        }
     }
 
     pub(super) fn instance_settings_tab(&mut self, ui: &mut egui::Ui, entry: &InstanceEntry) {
@@ -921,26 +894,54 @@ impl App {
             })
     }
 
-    /// In-memory log while an op slot exists, otherwise the cached tail of `last_op.log`.
-    fn log_body(&mut self, name: &str, entry: &InstanceEntry) -> String {
-        if let Some(slot) = self.ops.get(name) {
-            return slot.view.log.iter().cloned().collect::<Vec<_>>().join("\n");
-        }
-        let Some(path) = entry
-            .card
-            .meta
-            .last_op
-            .as_ref()
-            .and_then(|op| op.log.clone())
-        else {
+    /// Join the in-memory log. Only the Copy button calls this.
+    fn memory_log_text(&self, name: &str) -> String {
+        let Some(slot) = self.ops.get(name) else {
             return String::new();
         };
-        if let Some(cached) = self.instance_ui.log_tails.get(&path) {
-            return cached.clone();
-        }
-        let text = read_log_tail(&path, LOG_TAIL_LINES);
-        self.instance_ui.log_tails.insert(path, text.clone());
-        text
+        join_lines(slot.view.log.iter().map(String::as_str))
+    }
+
+    /// Visible rows of an op's in-memory log. `&self` so the row closure can index the deque.
+    fn paint_memory_log(&self, ui: &mut egui::Ui, name: &str) {
+        let total = self
+            .ops
+            .get(name)
+            .map(|slot| slot.view.log.len())
+            .unwrap_or(0);
+        log_frame(ui, |ui| {
+            if total == 0 {
+                log_placeholder(ui, "No log for this session yet.");
+                return;
+            }
+            let row_h = ui.fonts_mut(|fonts| fonts.row_height(&theme::mono(13.0)));
+            let color = theme::palette(ui.ctx()).text;
+            // Rows must all be `row_h` tall for `show_rows`, so lines do not wrap: long ones
+            // scroll sideways instead.
+            egui::ScrollArea::both()
+                .id_salt(("log-box", name))
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show_rows(ui, row_h, total, |ui, range| {
+                    let Some(slot) = self.ops.get(name) else {
+                        return;
+                    };
+                    for index in range {
+                        let Some(line) = slot.view.log.get(index) else {
+                            continue;
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(line.as_str())
+                                    .font(theme::mono(13.0))
+                                    .color(color),
+                            )
+                            .selectable(true)
+                            .extend(),
+                        );
+                    }
+                });
+        });
     }
 }
 
@@ -1125,14 +1126,85 @@ fn fmt_duration_ms(ms: u64) -> String {
     }
 }
 
-fn read_log_tail(path: &Path, lines_kept: usize) -> String {
-    let Ok(bytes) = std::fs::read(path) else {
-        return String::new();
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(lines_kept);
-    lines[start..].join("\n")
+fn log_frame(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::palette(ui.ctx());
+    let height = (ui.available_height() - 20.0).max(80.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect(
+        rect,
+        12.0,
+        p.bg_canvas,
+        egui::Stroke::new(1.0, p.line_soft),
+        egui::StrokeKind::Inside,
+    );
+    let inner = rect.shrink(12.0);
+    let mut log_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    log_ui.set_clip_rect(inner);
+    body(&mut log_ui);
+}
+
+fn log_placeholder(ui: &mut egui::Ui, text: &str) {
+    let p = theme::palette(ui.ctx());
+    ui.label(
+        egui::RichText::new(text)
+            .font(theme::regular(13.0))
+            .color(p.text_muted),
+    );
+}
+
+fn paint_file_log(ui: &mut egui::Ui, name: &str, loaded: &Loaded<Arc<Vec<String>>>) {
+    log_frame(ui, |ui| match loaded {
+        Loaded::Idle | Loaded::Loading => log_placeholder(ui, "Loading…"),
+        Loaded::Err(message) => log_placeholder(ui, message),
+        Loaded::Ready(lines) if lines.is_empty() => {
+            log_placeholder(ui, "No log for this session yet.");
+        }
+        Loaded::Ready(lines) => {
+            let row_h = ui.fonts_mut(|fonts| fonts.row_height(&theme::mono(13.0)));
+            let color = theme::palette(ui.ctx()).text;
+            let total = lines.len();
+            // Rows must all be `row_h` tall for `show_rows`, so lines do not wrap: long ones
+            // scroll sideways instead.
+            egui::ScrollArea::both()
+                .id_salt(("log-box", name))
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show_rows(ui, row_h, total, |ui, range| {
+                    for index in range {
+                        let Some(line) = lines.get(index) else {
+                            continue;
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(line.as_str())
+                                    .font(theme::mono(13.0))
+                                    .color(color),
+                            )
+                            .selectable(true)
+                            .extend(),
+                        );
+                    }
+                });
+        }
+    });
+}
+
+fn join_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
+    let mut text = String::new();
+    for (index, line) in lines.into_iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        text.push_str(line);
+    }
+    text
 }
 
 /// "Update", "Build", "Creation": the noun in "Update finished" / "Build failed".

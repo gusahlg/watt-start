@@ -6,6 +6,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use egui::{
     Align, Color32, CursorIcon, FontId, Id, Key, Layout, Modifiers, Rect, Sense, Stroke,
@@ -125,25 +126,23 @@ enum Click {
 
 enum Catalog {
     Pending,
-    Ready {
-        mods: Vec<AvailableMod>,
-        warnings: Vec<String>,
-    },
+    /// The backend's shared catalogue (mods, warnings): borrowed, never copied per frame.
+    Ready(Arc<(Vec<AvailableMod>, Vec<String>)>),
     Failed(String),
 }
 
 impl Catalog {
-    fn from_loaded(loaded: Loaded<(Vec<AvailableMod>, Vec<String>)>) -> Self {
+    fn from_loaded(loaded: Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>) -> Self {
         match loaded {
             Loaded::Idle | Loaded::Loading => Self::Pending,
-            Loaded::Ready((mods, warnings)) => Self::Ready { mods, warnings },
+            Loaded::Ready(data) => Self::Ready(data),
             Loaded::Err(message) => Self::Failed(message),
         }
     }
 
     fn mods(&self) -> &[AvailableMod] {
         match self {
-            Self::Ready { mods, .. } => mods,
+            Self::Ready(data) => &data.0,
             Self::Pending | Self::Failed(_) => &[],
         }
     }
@@ -1246,7 +1245,8 @@ fn paint_browse(
                 Click::None
             }
         }
-        Catalog::Ready { warnings, .. } => {
+        Catalog::Ready(data) => {
+            let warnings = &data.1;
             if model.rows.is_empty() {
                 let kind = if filter.active() {
                     EmptyKind::Filtered
@@ -1818,13 +1818,14 @@ fn build_browse(
     staged: &StagedMods,
     game_api: Option<&str>,
 ) -> BrowseModel {
-    let Catalog::Ready { mods, .. } = catalog else {
+    let Catalog::Ready(data) = catalog else {
         return BrowseModel {
             rows: Vec::new(),
             hidden_libraries: 0,
             non_library: 0,
         };
     };
+    let mods = &data.0;
     let filter = Filter::from_view(view);
     let names: HashMap<&str, &str> = mods
         .iter()
@@ -4329,7 +4330,7 @@ fn rebuild_view(
         let sectioned = view.search.trim().is_empty();
         item.nav = nav_browse(&model, sectioned);
         item.browse_n = match catalog {
-            Catalog::Ready { .. } => Some(model.rows.len()),
+            Catalog::Ready(_) => Some(model.rows.len()),
             Catalog::Pending | Catalog::Failed(_) => None,
         };
         item.browse = Some(model);
@@ -4361,9 +4362,10 @@ fn count_updates(packages: &[PackageCard], catalog: &[AvailableMod], staged: &St
 }
 
 fn cheap_browse_len(catalog: &Catalog, view: &InstanceModsUi) -> Option<usize> {
-    let Catalog::Ready { mods, .. } = catalog else {
+    let Catalog::Ready(data) = catalog else {
         return None;
     };
+    let mods = &data.0;
     let filter = Filter::from_view(view);
     Some(
         mods.iter()
@@ -4570,7 +4572,8 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
             1u8.hash(&mut hasher);
             message.hash(&mut hasher);
         }
-        Catalog::Ready { mods, warnings } => {
+        Catalog::Ready(data) => {
+            let (mods, warnings) = (&data.0, &data.1);
             2u8.hash(&mut hasher);
             warnings.hash(&mut hasher);
             mods.len().hash(&mut hasher);
@@ -5439,7 +5442,7 @@ mod tests {
             .cloned()
             .expect("modded instance");
         let mods = match backend.available_mods("modded") {
-            Loaded::Ready((mods, _)) => mods,
+            Loaded::Ready(data) => data.0.clone(),
             Loaded::Idle => panic!("catalogue idle"),
             Loaded::Loading => panic!("catalogue loading"),
             Loaded::Err(message) => panic!("catalogue failed: {message}"),

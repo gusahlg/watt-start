@@ -14,9 +14,11 @@ mod welcome;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{CentralPanel, Panel};
+use watt_core::client::OpWake;
 use watt_core::events::{Change, OpKind, OpOutcome, RepoLog};
 use watt_core::ops::{OpRequest, SourceSpec};
 use watt_core::settings::Settings;
@@ -214,10 +216,19 @@ pub struct App {
     pub(crate) staged_mods: HashMap<String, StagedMods>,
     pub(crate) updates: HashMap<String, Vec<RepoLog>>,
     pub(crate) startup_check: Option<StartupCheck>,
+    /// First frame's clock. The startup update check waits for the catalog, or two seconds.
+    first_frame: Option<Instant>,
+    /// The startup update check has been started, or skipped because the setting is off.
+    update_check_started: bool,
+    /// When a dirty settings draft should be written. `None` while it matches what was saved.
+    settings_save_at: Option<Instant>,
+    /// One waker shared by every op, built on the first frame. `None` until then (tests that
+    /// never draw poll ops themselves).
+    op_waker: Option<watt_core::client::OpWaker>,
     /// Zoom this app last applied or adopted. `None` until the first frame, so the saved
     /// scale wins over egui's default of 1.0.
     zoom_applied: Option<f32>,
-    /// When the catalog was last refreshed because a game or an external op was live.
+    /// When busy/running was last probed because a game or an external op was live.
     last_live_refresh: Option<Instant>,
 
     pub(crate) new_instance: Option<new_instance::NewInstanceState>,
@@ -242,6 +253,13 @@ pub struct App {
     /// Log tails and which instance was last on screen (drafts commit when it changes).
     pub(crate) instance_ui: instance_tabs::InstanceUiState,
     pub(crate) toasted_load_errors: std::collections::HashSet<String>,
+}
+
+/// A settings edit inside the half-second save delay is written when the window closes.
+impl Drop for App {
+    fn drop(&mut self) {
+        self.save_pending_settings();
+    }
 }
 
 impl App {
@@ -269,6 +287,10 @@ impl App {
             staged_mods: HashMap::new(),
             updates: HashMap::new(),
             startup_check: None,
+            first_frame: None,
+            update_check_started: false,
+            settings_save_at: None,
+            op_waker: None,
             zoom_applied: None,
             last_live_refresh: None,
             new_instance: None,
@@ -286,17 +308,8 @@ impl App {
             toasted_load_errors: std::collections::HashSet::new(),
         };
         app.sync_updates_from_backend();
-        if app.backend.settings().check_updates_on_start {
-            let op = app
-                .backend
-                .start_op(OpRequest::CheckUpdates { instance: None });
-            app.startup_check = Some(StartupCheck {
-                op,
-                view: OpView::default(),
-                processed: 0,
-                cleared: HashSet::new(),
-            });
-        }
+        // The update check waits until the first catalog lands (or two seconds), so it does not
+        // compete with the opening scan. See [`App::maybe_start_update_check`].
         app.ensure_selection();
         app
     }
@@ -463,22 +476,20 @@ impl App {
             self.settings_draft.appearance.dark,
             self.settings_draft.appearance.animations,
         );
+        self.ensure_wake(ui.ctx());
 
         if self.backend.tick() {
             self.ensure_selection();
             self.sync_updates_from_backend();
         }
         self.poll_ops(ui.ctx());
-        self.poll_startup_check();
+        self.poll_startup_check(ui.ctx());
         self.refresh_live_status(ui.ctx());
+        // After tick, so a catalog that landed this frame counts. Before the panels, so the
+        // brand spinner is on screen the same frame the check starts.
+        self.maybe_start_update_check(ui.ctx());
+        self.flush_settings();
         self.handle_shortcuts(ui.ctx());
-
-        if self.backend.loading() || self.startup_check.is_some() {
-            // Background jobs don't wake egui; poll them while they run, animations or not.
-            // The startup check also drives the brand spinner.
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
-        }
 
         let no_catalog = self.backend.instances().is_empty() && !self.has_live_instance_op();
         let settings_open = matches!(self.main_view, Some(MainView::Settings));
@@ -538,13 +549,14 @@ impl App {
 
     fn poll_ops(&mut self, ctx: &egui::Context) {
         let mut to_settle = Vec::new();
-        let mut any_running = false;
+        let mut needs_clock = false;
         for (name, slot) in &mut self.ops {
-            if slot.op.poll(&mut slot.view) {
-                ctx.request_repaint();
-            }
+            // A waker already asked for this frame. Requesting again would pin the delay at 0.
+            let _applied = slot.op.poll(&mut slot.view);
             if slot.running() {
-                any_running = true;
+                if !slot.op.wakes_on_io() {
+                    needs_clock = true;
+                }
             } else if !slot.settled {
                 slot.settled = true;
                 slot.settled_at = Some(Instant::now());
@@ -554,8 +566,8 @@ impl App {
         for name in to_settle {
             self.on_op_settled(ctx, &name);
         }
-        if any_running {
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        if needs_clock {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 
@@ -578,6 +590,14 @@ impl App {
             .changes
             .iter()
             .any(|c| matches!(c, Change::Launched { .. }));
+
+        // After `refresh`, so a chained rescan finishes before the mod catalogue reloads.
+        if matches!(
+            kind,
+            OpKind::Create | OpKind::Mods | OpKind::Update | OpKind::SetSource
+        ) {
+            self.backend.invalidate_mods();
+        }
 
         // A failed mod change: give the user their staged list back (they can Discard it).
         if !succeeded
@@ -685,12 +705,12 @@ impl App {
         self.group_draft.remove(instance);
     }
 
-    fn poll_startup_check(&mut self) {
-        let (fresh, done) = {
+    fn poll_startup_check(&mut self, ctx: &egui::Context) {
+        let (fresh, done, needs_clock) = {
             let Some(check) = self.startup_check.as_mut() else {
                 return;
             };
-            check.op.poll(&mut check.view);
+            let _applied = check.op.poll(&mut check.view);
             let start = check.processed.min(check.view.changes.len());
             let fresh: Vec<(String, Vec<RepoLog>)> = check.view.changes[start..]
                 .iter()
@@ -706,10 +726,14 @@ impl App {
                 .collect();
             check.processed = check.view.changes.len();
             let done = !check.view.running();
-            (fresh, done)
+            let needs_clock = !done && !check.op.wakes_on_io();
+            (fresh, done, needs_clock)
         };
         for (instance, whats_new) in fresh {
             self.updates.insert(instance, whats_new);
+        }
+        if needs_clock {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
         if done {
             self.startup_check = None;
@@ -762,10 +786,95 @@ impl App {
             .last_live_refresh
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(3));
         if due {
-            self.backend.refresh();
+            self.backend.refresh_liveness();
             self.last_live_refresh = Some(Instant::now());
         }
         ctx.request_repaint_after(Duration::from_secs(3));
+    }
+
+    /// Install the egui context and one op waker on the first frame, then hand that waker to
+    /// any op that does not have it yet.
+    fn ensure_wake(&mut self, ctx: &egui::Context) {
+        if self.op_waker.is_none() {
+            self.backend.set_ui_context(ctx.clone());
+            let ctx = ctx.clone();
+            self.op_waker = Some(Arc::new(move |wake| match wake {
+                OpWake::Immediate => ctx.request_repaint(),
+                OpWake::Coalesce => ctx.request_repaint_after(Duration::from_millis(100)),
+            }));
+        }
+        self.install_waker();
+    }
+
+    fn install_waker(&mut self) {
+        let Some(waker) = self.op_waker.clone() else {
+            return;
+        };
+        for slot in self.ops.values_mut() {
+            if !slot.op.has_waker() {
+                slot.op.set_waker(Arc::clone(&waker));
+            }
+        }
+        if let Some(check) = self.startup_check.as_mut()
+            && !check.op.has_waker()
+        {
+            check.op.set_waker(waker);
+        }
+    }
+
+    /// Start the "check every instance" op once the catalog has landed, or two seconds after
+    /// the first frame, whichever comes first. Honors `check_updates_on_start`.
+    fn maybe_start_update_check(&mut self, ctx: &egui::Context) {
+        if self.update_check_started {
+            return;
+        }
+        if !self.settings_draft.check_updates_on_start {
+            self.update_check_started = true;
+            return;
+        }
+        let first = *self.first_frame.get_or_insert_with(Instant::now);
+        let catalog_ready = !self.backend.refresh_pending();
+        let waited = first.elapsed() >= Duration::from_secs(2);
+        if catalog_ready || waited {
+            self.update_check_started = true;
+            self.begin_startup_check();
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_secs(2).saturating_sub(first.elapsed()));
+    }
+
+    fn begin_startup_check(&mut self) {
+        let mut op = self
+            .backend
+            .start_op(OpRequest::CheckUpdates { instance: None });
+        if let Some(waker) = &self.op_waker {
+            op.set_waker(Arc::clone(waker));
+        }
+        self.startup_check = Some(StartupCheck {
+            op,
+            view: OpView::default(),
+            processed: 0,
+            cleared: HashSet::new(),
+        });
+    }
+
+    /// Write a settings draft that has been dirty for half a second, or at once when the
+    /// settings page is no longer showing (a dialog or op may read the saved settings next).
+    fn flush_settings(&mut self) {
+        let settings_open = matches!(self.main_view, Some(MainView::Settings));
+        if self
+            .settings_save_at
+            .is_some_and(|at| !settings_open || Instant::now() >= at)
+        {
+            self.save_pending_settings();
+        }
+    }
+
+    /// Write the settings draft now if a delayed save is pending.
+    fn save_pending_settings(&mut self) {
+        if self.settings_save_at.take().is_some() {
+            self.backend.save_settings(self.settings_draft.clone());
+        }
     }
 
     fn modal_open(&self) -> bool {
@@ -800,21 +909,27 @@ impl App {
         }
         let typing = ctx.memory(|mem| mem.focused().is_some());
         let popup = egui::Popup::is_any_open(ctx);
+        // Look at the key before cloning an entry or asking why Play would refuse. Consume it
+        // only when Play is actually allowed, so a blocked instance does not swallow Enter.
+        let plain_enter =
+            ctx.input(|input| input.key_pressed(Key::Enter) && input.modifiers == Modifiers::NONE);
         if !modal_open
             && !typing
             && !popup
             && !self.mods_claims_enter()
+            && plain_enter
             && let Some(MainView::Instance(name)) = self.main_view.clone()
-            && let Some(entry) = self
+        {
+            let allowed = self
                 .backend
                 .instances()
                 .iter()
                 .find(|entry| entry.card.name == name)
                 .cloned()
-            && self.play_block_reason(&entry).is_none()
-            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
-        {
-            self.play(&name, false);
+                .is_some_and(|entry| self.play_block_reason(entry.as_ref()).is_none());
+            if allowed && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter)) {
+                self.play(&name, false);
+            }
         }
         if !modal_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.focus_search = true;
@@ -874,7 +989,12 @@ impl App {
             OpRequest::Maintenance { .. } => "Maintenance".to_owned(),
             _ => self.instance_title(&key),
         };
-        let op = self.backend.start_op(request.clone());
+        // The op runs in a child process that reads settings from disk.
+        self.save_pending_settings();
+        let mut op = self.backend.start_op(request.clone());
+        if let Some(waker) = &self.op_waker {
+            op.set_waker(Arc::clone(waker));
+        }
         self.ops.insert(
             key,
             OpSlot {

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use pwc_manifest::{
@@ -10,8 +11,8 @@ use pwc_manifest::{
 use watt_core::catalog::{AvailableMod, GameInfo, InstanceCard, PackageCard};
 use watt_core::doctor::{Check, Level};
 use watt_core::events::{
-    Change, Commit, Envelope, Event, OpKind, OpOutcome, PROTOCOL, Phase, PhaseOutcome, Recovery,
-    RepoLog,
+    Change, Commit, Envelope, Event, LogStream, OpKind, OpOutcome, PROTOCOL, Phase, PhaseOutcome,
+    Recovery, RepoLog,
 };
 use watt_core::git::BranchInfo;
 use watt_core::meta::{Binding, BuiltGame, Generation, LastOp, Meta, Pin};
@@ -1221,15 +1222,20 @@ fn extra_catalog() -> Vec<AvailableMod> {
 /// The demo backend.
 pub struct DemoBackend {
     settings: Settings,
-    instances: Vec<InstanceEntry>,
+    instances: Vec<Arc<InstanceEntry>>,
     updates: BTreeMap<String, Vec<RepoLog>>,
     mods_catalog: Vec<AvailableMod>,
+    /// Built on the first [`Backend::available_mods`] call so later frames clone an `Arc`.
+    mods_ready: Option<Arc<(Vec<AvailableMod>, Vec<String>)>>,
     doctor: Vec<Check>,
     next_op_id: u64,
     /// Launcher self-update. Never touches the network.
     launcher_update: watt_core::selfupdate::UpdateStatus,
     /// `show_update_available` or `WATT_START_DEMO_UPDATE=1` was asked for.
     fake_update: bool,
+    /// When non-zero, [`DemoBackend::start_op`] plays a running build with this many log lines
+    /// already due. Only [`DemoBackend::stress`] sets it.
+    stress_log_lines: usize,
 }
 
 impl DemoBackend {
@@ -1243,7 +1249,7 @@ impl DemoBackend {
             if let Some(u) = f.updates.clone() {
                 updates.insert(name, u);
             }
-            instances.push(build_entry(f, now));
+            instances.push(Arc::new(build_entry(f, now)));
         }
 
         let mut mods_catalog = vec![
@@ -1414,12 +1420,14 @@ impl DemoBackend {
             instances,
             updates,
             mods_catalog,
+            mods_ready: None,
             doctor,
             next_op_id: 1,
             launcher_update: watt_core::selfupdate::UpdateStatus::with_install(
                 watt_core::selfupdate::InstallKind::Development,
             ),
             fake_update: false,
+            stress_log_lines: 0,
         };
         if std::env::var("WATT_START_DEMO_UPDATE").as_deref() == Ok("1") {
             backend.show_update_available();
@@ -1445,6 +1453,116 @@ impl DemoBackend {
             ..Self::new()
         }
     }
+
+    /// A large fixture for the frame-cost harness: `instances` sidebar rows, `mods` catalogue
+    /// entries, and a build op whose log already holds `log_lines` lines.
+    ///
+    /// Animations and the startup update check are off, so a stepped harness measures layout
+    /// rather than a spinner. Only the perf test calls this.
+    #[allow(dead_code)]
+    pub fn stress(instances: usize, mods: usize, log_lines: usize) -> Self {
+        let now = watt_core::paths::now_secs();
+        let defaults = Settings::default();
+        let settings = Settings {
+            check_updates_on_start: false,
+            appearance: watt_core::settings::Appearance {
+                animations: false,
+                ..defaults.appearance.clone()
+            },
+            ..defaults
+        };
+        Self {
+            settings,
+            instances: (0..instances)
+                .map(|i| Arc::new(stress_entry(i, now)))
+                .collect(),
+            updates: BTreeMap::new(),
+            mods_catalog: (0..mods).map(stress_mod).collect(),
+            mods_ready: None,
+            doctor: Vec::new(),
+            next_op_id: 1,
+            launcher_update: watt_core::selfupdate::UpdateStatus::with_install(
+                watt_core::selfupdate::InstallKind::Development,
+            ),
+            fake_update: false,
+            stress_log_lines: log_lines,
+        }
+    }
+}
+
+/// One managed instance with a single ready generation. Names are `s00`, `s01`, …
+#[allow(dead_code)]
+fn stress_entry(index: usize, now: u64) -> InstanceEntry {
+    let name = format!("s{index:02}");
+    let meta = Meta {
+        format: 1,
+        display_name: Some(format!("Instance {index}")),
+        color: None,
+        group: (index >= 3 && index.is_multiple_of(5)).then(|| "Bench".to_owned()),
+        favorite: index < 3,
+        notes: String::new(),
+        created: Some(now.saturating_sub(86_400)),
+        last_played: None,
+        source: Binding::Managed {
+            channel: "main".into(),
+            engine_ref: watt_core::meta::AUTO.into(),
+            mods_ref: watt_core::meta::AUTO.into(),
+            pin: Some(pin("main", &name)),
+        },
+        generations: vec![generation(1, now, "0.6.1", &name, true)],
+        last_op: None,
+    };
+    let last_good = meta.last_good().cloned();
+    InstanceEntry {
+        card: InstanceCard {
+            name: name.clone(),
+            dir: PathBuf::from(format!("/var/lib/pwc/instances/{name}")),
+            manifest: InstanceManifest::new(
+                InstanceName::parse(&name).expect("stress instance name"),
+                VersionReq::STAR,
+            ),
+            meta,
+            lock: None,
+            packages: Vec::new(),
+            game: GameInfo {
+                version: Some("0.6.1".into()),
+                api: Some("0.4.2".into()),
+                revision: Some(fake_sha(&format!("{name}-rev"))),
+                dirty: false,
+                source_dir: Some(PathBuf::from(format!("/var/lib/pwc/sources/v1/{name}"))),
+                branch: Some("main".into()),
+                engine_revision: Some(fake_sha(&format!("{name}-engine"))),
+                mods_revision: Some(fake_sha(&format!("{name}-mods"))),
+                environment: Some(format!("sha256:{}", fake_sha(&name))),
+            },
+            active: index == 0,
+            problems: Vec::new(),
+        },
+        status: InstanceStatus {
+            readiness: Readiness::Ready {
+                game: PathBuf::from(format!("/var/lib/pwc/cache/{name}/game")),
+            },
+            busy: false,
+            running: None,
+            last_good,
+        },
+    }
+}
+
+#[allow(dead_code)]
+fn stress_mod(index: usize) -> AvailableMod {
+    let id = format!("pwc.stress-{index}");
+    let name = format!("Stress Mod {index}");
+    available(
+        &id,
+        &name,
+        "1.0.0",
+        "mod",
+        "Generated catalogue row for the frame-cost harness.",
+        &["worldgen"],
+        &[],
+        &[],
+    )
 }
 
 impl Backend for DemoBackend {
@@ -1460,7 +1578,7 @@ impl Backend for DemoBackend {
         false
     }
 
-    fn instances(&self) -> &[InstanceEntry] {
+    fn instances(&self) -> &[Arc<InstanceEntry>] {
         &self.instances
     }
 
@@ -1475,11 +1593,12 @@ impl Backend for DemoBackend {
     fn refresh(&mut self) {}
 
     fn edit_meta(&mut self, instance: &str, edit: MetaEdit) -> Result<Meta, String> {
-        let entry = self
+        let slot = self
             .instances
             .iter_mut()
             .find(|e| e.card.name == instance)
             .ok_or_else(|| "instance not found".to_owned())?;
+        let entry = Arc::make_mut(slot);
         match edit {
             MetaEdit::DisplayName(v) => {
                 entry.card.meta.display_name = (!v.trim().is_empty()).then_some(v)
@@ -1492,8 +1611,13 @@ impl Backend for DemoBackend {
         Ok(entry.card.meta.clone())
     }
 
-    fn available_mods(&mut self, _instance: &str) -> Loaded<(Vec<AvailableMod>, Vec<String>)> {
-        Loaded::Ready((self.mods_catalog.clone(), Vec::new()))
+    fn available_mods(&mut self, _instance: &str) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
+        if self.mods_ready.is_none() {
+            let ready = Arc::new((self.mods_catalog.clone(), Vec::new()));
+            self.mods_ready = Some(ready);
+        }
+        let ready = self.mods_ready.as_ref().expect("inserted above").clone();
+        Loaded::Ready(ready)
     }
 
     fn branches(&mut self) -> Loaded<Vec<BranchInfo>> {
@@ -1528,6 +1652,9 @@ impl Backend for DemoBackend {
     fn start_op(&mut self, request: OpRequest) -> RunningOp {
         let op_id = format!("demo-{}", self.next_op_id);
         self.next_op_id += 1;
+        if self.stress_log_lines > 0 {
+            return RunningOp::Demo(DemoOp::stress(op_id, &request, self.stress_log_lines));
+        }
         let fail = request.instance() == Some("flaky-build");
         RunningOp::Demo(DemoOp::new(op_id, &request, fail))
     }
@@ -1588,6 +1715,7 @@ pub struct DemoOp {
     next: usize,
     cancelled: bool,
     finished: bool,
+    waker: Option<watt_core::client::OpWaker>,
 }
 
 impl DemoOp {
@@ -1609,7 +1737,18 @@ impl DemoOp {
             next: 0,
             cancelled: false,
             finished: false,
+            waker: None,
         }
+    }
+
+    /// Remember how to wake egui. The demo timeline is still clock-driven: the UI polls it.
+    pub fn set_waker(&mut self, waker: watt_core::client::OpWaker) {
+        self.waker = Some(waker);
+    }
+
+    /// Whether [`DemoOp::set_waker`] has been called.
+    pub fn has_waker(&self) -> bool {
+        self.waker.is_some()
     }
 
     /// An op that failed before it could even start (e.g. `current_exe` was unavailable). Only
@@ -1646,6 +1785,13 @@ impl DemoOp {
             next: 0,
             cancelled: false,
             finished: false,
+            waker: None,
+        }
+    }
+
+    fn wake(&self, kind: watt_core::client::OpWake) {
+        if let Some(waker) = &self.waker {
+            waker(kind);
         }
     }
 
@@ -1666,13 +1812,19 @@ impl DemoOp {
                     duration_ms: elapsed,
                 },
             };
-            view.apply(&env);
+            view.apply_owned(env);
             self.finished = true;
+            self.wake(watt_core::client::OpWake::Immediate);
             return true;
         }
         let mut changed = false;
+        let mut immediate = false;
         while self.next < self.timeline.len() && self.timeline[self.next].0 <= elapsed {
             let (t_ms, event) = self.timeline[self.next].clone();
+            immediate |= matches!(
+                watt_core::client::op_wake(&event),
+                watt_core::client::OpWake::Immediate
+            );
             let is_finish = matches!(event, Event::OpFinished { .. });
             let env = Envelope {
                 protocol: PROTOCOL,
@@ -1681,12 +1833,19 @@ impl DemoOp {
                 t_ms,
                 event,
             };
-            view.apply(&env);
+            view.apply_owned(env);
             changed = true;
             self.next += 1;
             if is_finish {
                 self.finished = true;
             }
+        }
+        if changed {
+            self.wake(if immediate {
+                watt_core::client::OpWake::Immediate
+            } else {
+                watt_core::client::OpWake::Coalesce
+            });
         }
         changed
     }
@@ -1694,6 +1853,45 @@ impl DemoOp {
     /// Ask the (simulated) op to stop.
     pub fn cancel(&mut self) {
         self.cancelled = true;
+    }
+
+    /// A build that is already in Compile, with `log_lines` tool lines due immediately, and
+    /// that never finishes. The frame-cost harness opens the Forge and the Log tab on it.
+    #[allow(dead_code)]
+    pub fn stress(op_id: String, request: &OpRequest, log_lines: usize) -> Self {
+        let instance = request.instance().map(str::to_owned);
+        let mut timeline = vec![
+            (0, started(OpKind::Build, instance, &[Phase::Compile])),
+            (0, phase(Phase::Compile, "Compiling")),
+            (
+                0,
+                Event::Progress {
+                    phase: Phase::Compile,
+                    done: 40,
+                    total: Some(100),
+                    detail: "watt_stress".into(),
+                },
+            ),
+        ];
+        timeline.reserve(log_lines);
+        for i in 0..log_lines {
+            timeline.push((
+                0,
+                Event::Log {
+                    stream: LogStream::Tool,
+                    line: format!("compiling crate {i}"),
+                },
+            ));
+        }
+        Self {
+            op_id,
+            started: Instant::now(),
+            timeline,
+            next: 0,
+            cancelled: false,
+            finished: false,
+            waker: None,
+        }
     }
 }
 

@@ -139,34 +139,40 @@ impl App {
     }
 
     fn instance_list(&mut self, ui: &mut egui::Ui) {
-        let needle = self.search.to_lowercase();
-        let entries: Vec<InstanceEntry> = self
+        // Plan under `&self` so a row can be built without cloning the catalog entry, then paint.
+        for item in self.sidebar_plan() {
+            match item {
+                SideItem::Heading(title) => group_heading(ui, &title),
+                SideItem::Row(row) => self.side_row(ui, &row),
+            }
+        }
+    }
+
+    fn sidebar_plan(&self) -> Vec<SideItem> {
+        let needle = self.search.as_str();
+        let entries: Vec<&InstanceEntry> = self
             .backend
             .instances()
             .iter()
             .filter(|entry| {
                 needle.is_empty()
-                    || entry
-                        .card
-                        .meta
-                        .title(&entry.card.name)
-                        .to_lowercase()
-                        .contains(&needle)
-                    || entry.card.name.to_lowercase().contains(&needle)
+                    || contains_ignore_case(entry.card.meta.title(&entry.card.name), needle)
+                    || contains_ignore_case(&entry.card.name, needle)
             })
-            .cloned()
+            .map(|entry| entry.as_ref())
             .collect();
-        let pending = self.pending_rows(&needle);
+        let pending = self.pending_rows(needle);
+        let mut items = Vec::new();
 
         let favorites: Vec<&InstanceEntry> = entries
             .iter()
+            .copied()
             .filter(|entry| entry.card.meta.favorite)
             .collect();
         if !favorites.is_empty() {
-            group_heading(ui, "Favourites");
+            items.push(SideItem::Heading("Favourites".to_owned()));
             for entry in &favorites {
-                let row = self.row_for_entry(entry);
-                self.side_row(ui, &row);
+                items.push(SideItem::Row(self.row_for_entry(entry)));
             }
         }
 
@@ -179,38 +185,36 @@ impl App {
         groups.dedup();
         let grouped = !favorites.is_empty() || !groups.is_empty();
         for group in groups {
-            group_heading(ui, group);
-            for entry in entries.iter().filter(|entry| {
+            items.push(SideItem::Heading(group.to_owned()));
+            for entry in entries.iter().copied().filter(|entry| {
                 !entry.card.meta.favorite && entry.card.meta.group.as_deref() == Some(group)
             }) {
-                let row = self.row_for_entry(entry);
-                self.side_row(ui, &row);
+                items.push(SideItem::Row(self.row_for_entry(entry)));
             }
         }
 
         let rest: Vec<&InstanceEntry> = entries
             .iter()
+            .copied()
             .filter(|entry| !entry.card.meta.favorite && entry.card.meta.group.is_none())
             .collect();
         let mut showed_other = false;
         if !rest.is_empty() {
             if grouped || !pending.is_empty() {
-                group_heading(ui, "Other");
+                items.push(SideItem::Heading("Other".to_owned()));
                 showed_other = true;
             }
-            for entry in &rest {
-                let row = self.row_for_entry(entry);
-                self.side_row(ui, &row);
+            for entry in rest {
+                items.push(SideItem::Row(self.row_for_entry(entry)));
             }
         }
         if !pending.is_empty() {
             if !showed_other {
-                group_heading(ui, "Other");
+                items.push(SideItem::Heading("Other".to_owned()));
             }
-            for row in &pending {
-                self.side_row(ui, row);
-            }
+            items.extend(pending.into_iter().map(SideItem::Row));
         }
+        items
     }
 
     /// Ops whose key is not a catalog entry yet (Create, Duplicate). Sorted by title, then key,
@@ -228,8 +232,8 @@ impl App {
             })
             .filter(|(key, slot)| {
                 needle.is_empty()
-                    || slot.title.to_lowercase().contains(needle)
-                    || key.to_lowercase().contains(needle)
+                    || contains_ignore_case(&slot.title, needle)
+                    || contains_ignore_case(key, needle)
             })
             .map(|(key, slot)| {
                 (
@@ -358,6 +362,11 @@ impl App {
     }
 }
 
+enum SideItem {
+    Heading(String),
+    Row(SideRow),
+}
+
 struct SideRow {
     key: String,
     title: String,
@@ -373,6 +382,22 @@ enum SideStatus {
     Spinner,
     Count(usize),
     Dot(egui::Color32),
+}
+
+/// Case-insensitive `contains`. ASCII text (the common case) is compared in place; anything
+/// else falls back to lowercased copies so "Ö" still matches "ö".
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !haystack.is_ascii() || !needle.is_ascii() {
+        return haystack.to_lowercase().contains(&needle.to_lowercase());
+    }
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn paint_side_row(ui: &mut egui::Ui, rect: egui::Rect, row: &SideRow) {

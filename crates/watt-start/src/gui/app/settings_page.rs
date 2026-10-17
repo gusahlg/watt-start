@@ -1,7 +1,8 @@
 //! The settings page: preferences, advanced source configuration, maintenance and system checks.
 //!
-//! Values are written through when a control reports [`egui::Response::changed`]. Theme, scale
-//! and animations apply on the next frame, when [`super::App::ui`] calls [`crate::gui::theme::apply`].
+//! A control that reports [`egui::Response::changed`] marks the draft dirty. [`super::App::ui`]
+//! writes it about half a second later, so a drag does not save every frame. Theme, scale and
+//! animations apply on the next frame, when [`super::App::ui`] calls [`crate::gui::theme::apply`].
 
 use std::path::PathBuf;
 
@@ -44,7 +45,11 @@ impl App {
                         page_title(ui);
                         let changed = preferences(ui, &mut self.settings_draft);
                         if changed {
-                            self.backend.save_settings(self.settings_draft.clone());
+                            self.settings_save_at = Some(
+                                std::time::Instant::now() + std::time::Duration::from_millis(500),
+                            );
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(500));
                         }
                         maintenance_card(ui, &maintenance, self);
                         doctor_card(ui, &doctor, self);

@@ -3,6 +3,9 @@
 //! A running or settled op that the user has not hidden replaces the tabs with the Forge. The
 //! header stays, and its second row becomes the progress capsule while the op is running.
 
+use std::borrow::Cow;
+use std::fmt::Write as _;
+
 use watt_core::events::{OpKind, OpOutcome};
 use watt_core::meta::{Binding, short};
 use watt_core::ops::OpRequest;
@@ -34,15 +37,15 @@ impl App {
             return;
         }
 
-        self.header(ui, name, entry.as_ref());
+        self.header(ui, name, entry.as_deref());
 
         let show_forge = self.ops.get(name).is_some_and(|slot| !slot.hidden);
         if show_forge {
             ui.add_space(12.0);
-            self.forge_body(ui, name, entry.as_ref());
+            self.forge_body(ui, name, entry.as_deref());
         } else if entry.is_none() {
             self.pending_hidden(ui);
-        } else if let Some(entry) = entry.as_ref() {
+        } else if let Some(entry) = entry.as_deref() {
             self.tabbed_body(ui, entry);
         }
     }
@@ -86,7 +89,7 @@ impl App {
         widgets::cube(ui.painter(), cube, accent);
 
         let (pill, pill_color, pulse) = self.header_pill(ui, name, entry);
-        let pill_w = pill_width(ui, &pill);
+        let pill_w = pill_width(ui, pill.as_ref());
         let text_left = cube.right() + 14.0;
         let reserve = self.hidden_chip_width(ui, name, entry.is_some());
         let text_w = (rect.right() - reserve - text_left).max(40.0);
@@ -108,18 +111,21 @@ impl App {
         let block = title_h + 2.0 + meta_h;
         let y = rect.center().y - block * 0.5;
         let title_max = (text_w - pill_w - 10.0).max(24.0);
-        let title = entry
-            .map(|e| e.card.meta.title(&e.card.name).to_owned())
-            .unwrap_or_else(|| {
-                self.ops
-                    .get(name)
-                    .map(|slot| slot.title.clone())
-                    .unwrap_or_else(|| name.to_owned())
-            });
+        let owned_title;
+        let title = if let Some(entry) = entry {
+            entry.card.meta.title(name)
+        } else {
+            owned_title = self
+                .ops
+                .get(name)
+                .map(|slot| slot.title.clone())
+                .unwrap_or_else(|| name.to_owned());
+            owned_title.as_str()
+        };
         let title_rect = paint_ellipsis(
             ui.painter(),
             egui::pos2(text_left, y),
-            &title,
+            title,
             title_font,
             p.text_bright,
             title_max,
@@ -133,7 +139,7 @@ impl App {
                 .max_rect(pill_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        widgets::status_pill(&mut pill_ui, &pill, pill_color, pulse);
+        widgets::status_pill(&mut pill_ui, pill.as_ref(), pill_color, pulse);
         paint_ellipsis(
             ui.painter(),
             egui::pos2(text_left, y + title_h + 2.0),
@@ -511,9 +517,12 @@ impl App {
         let accent = entry
             .map(|e| theme::accent_for_meta(name, e.card.meta.color.as_deref()))
             .unwrap_or_else(|| theme::palette(ui.ctx()).volt);
-        let Some(prepared) = self.prepare_forge(name, entry, accent) else {
+        let Some(style) = self.forge_style(name, entry, accent) else {
             return;
         };
+        // Copy the fn pointer, then borrow the view only for the paint. The response mutates
+        // the slot, so the view borrow has to end first.
+        let forge = self.forge.forge;
         let rest = ui.available_rect_before_wrap();
         let rect = egui::Rect::from_min_max(
             egui::pos2(rest.left() + 24.0, rest.top()),
@@ -524,16 +533,21 @@ impl App {
                 .max_rect(rect)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        let response = (self.forge.forge)(&mut body, &prepared.view, &prepared.style);
+        let response = {
+            let Some(slot) = self.ops.get(name) else {
+                return;
+            };
+            forge(&mut body, &slot.view, &style)
+        };
         self.apply_forge_response(name, response);
     }
 
-    fn prepare_forge(
+    fn forge_style(
         &self,
         name: &str,
         entry: Option<&InstanceEntry>,
         accent: egui::Color32,
-    ) -> Option<PreparedForge> {
+    ) -> Option<ForgeStyle> {
         let slot = self.ops.get(name)?;
         let title = entry
             .map(|e| e.card.meta.title(name).to_owned())
@@ -545,18 +559,15 @@ impl App {
                 .iter()
                 .find_map(|g| g.build.as_ref().map(|b| b.duration_ms))
         });
-        Some(PreparedForge {
-            view: slot.view.clone(),
-            style: ForgeStyle {
-                accent,
-                animate: self.settings_draft.appearance.animations,
-                expected_ms,
-                title,
-                elapsed_ms: Some(forge_elapsed_ms(slot)),
-                ready: entry
-                    .is_some_and(|entry| matches!(entry.status.readiness, Readiness::Ready { .. })),
-                retry_only: slot.kind() == OpKind::Duplicate,
-            },
+        Some(ForgeStyle {
+            accent,
+            animate: self.settings_draft.appearance.animations,
+            expected_ms,
+            title,
+            elapsed_ms: Some(forge_elapsed_ms(slot)),
+            ready: entry
+                .is_some_and(|entry| matches!(entry.status.readiness, Readiness::Ready { .. })),
+            retry_only: slot.kind() == OpKind::Duplicate,
         })
     }
 
@@ -640,7 +651,7 @@ impl App {
         ui: &egui::Ui,
         name: &str,
         entry: Option<&InstanceEntry>,
-    ) -> (String, egui::Color32, bool) {
+    ) -> (Cow<'static, str>, egui::Color32, bool) {
         let p = theme::palette(ui.ctx());
         let Some(entry) = entry else {
             let slot = self.ops.get(name);
@@ -659,17 +670,17 @@ impl App {
                 .map(|slot| slot.view.fraction())
                 .unwrap_or(0.0);
             let label = format!("{} {}%", kind.verb(), percent(fraction));
-            return (label, p.volt, false);
+            return (Cow::Owned(label), p.volt, false);
         }
         if entry.status.running.is_some() {
             // Steady dot. A pulse would repaint the window for as long as the game runs.
-            return ("Running".to_owned(), p.arc, false);
+            return (Cow::Borrowed("Running"), p.arc, false);
         }
         match &entry.status.readiness {
-            Readiness::Ready { .. } => ("Ready".to_owned(), p.ok, false),
-            Readiness::NeedsBuild { .. } => ("Needs build".to_owned(), p.volt, false),
-            Readiness::Broken { .. } => ("Can't build".to_owned(), p.bad, false),
-            Readiness::New => ("New".to_owned(), p.neutral, false),
+            Readiness::Ready { .. } => (Cow::Borrowed("Ready"), p.ok, false),
+            Readiness::NeedsBuild { .. } => (Cow::Borrowed("Needs build"), p.volt, false),
+            Readiness::Broken { .. } => (Cow::Borrowed("Can't build"), p.bad, false),
+            Readiness::New => (Cow::Borrowed("New"), p.neutral, false),
         }
     }
 
@@ -740,11 +751,6 @@ impl App {
         }
         None
     }
-}
-
-struct PreparedForge {
-    view: watt_core::view::OpView,
-    style: ForgeStyle,
 }
 
 /// Actions that did not fit the header row and move into the kebab menu.
@@ -856,21 +862,20 @@ fn rounded_span(rect: egui::Rect, radius: f32, x: f32) -> (f32, f32) {
 }
 
 fn meta_line(entry: &InstanceEntry, mods: usize) -> String {
-    let mut parts = Vec::new();
-    parts.push(source_chip(entry));
+    let mut line = source_chip(entry);
     if let Some(version) = &entry.card.game.version {
-        parts.push(format!("Game {version}"));
+        let _ = write!(line, " · Game {version}");
     }
     if let Some(engine) = &entry.card.game.engine_revision {
-        parts.push(format!("Engine {}", short(engine)));
+        let _ = write!(line, " · Engine {}", short(engine));
     }
-    parts.push(if mods == 1 {
-        "1 mod".to_owned()
+    if mods == 1 {
+        line.push_str(" · 1 mod");
     } else {
-        format!("{mods} mods")
-    });
-    parts.push(entry.card.manifest.profile.as_str().to_owned());
-    parts.join(" · ")
+        let _ = write!(line, " · {mods} mods");
+    }
+    let _ = write!(line, " · {}", entry.card.manifest.profile.as_str());
+    line
 }
 
 fn source_chip(entry: &InstanceEntry) -> String {
@@ -908,19 +913,19 @@ fn pending_pill(
     kind: OpKind,
     running: bool,
     outcome: Option<&OpOutcome>,
-) -> (String, egui::Color32, bool) {
+) -> (Cow<'static, str>, egui::Color32, bool) {
     if running {
         let label = match kind {
-            OpKind::Duplicate => "Copying…".to_owned(),
-            OpKind::Create => "Creating…".to_owned(),
-            other => format!("{}…", other.verb()),
+            OpKind::Duplicate => Cow::Borrowed("Copying…"),
+            OpKind::Create => Cow::Borrowed("Creating…"),
+            other => Cow::Owned(format!("{}…", other.verb())),
         };
         return (label, palette.volt, false);
     }
     match outcome {
-        Some(OpOutcome::Ok { .. }) => ("Done".to_owned(), palette.ok, false),
-        Some(OpOutcome::Failed { .. }) => ("Failed".to_owned(), palette.bad, false),
-        Some(OpOutcome::Cancelled) | None => ("Cancelled".to_owned(), palette.neutral, false),
+        Some(OpOutcome::Ok { .. }) => (Cow::Borrowed("Done"), palette.ok, false),
+        Some(OpOutcome::Failed { .. }) => (Cow::Borrowed("Failed"), palette.bad, false),
+        Some(OpOutcome::Cancelled) | None => (Cow::Borrowed("Cancelled"), palette.neutral, false),
     }
 }
 

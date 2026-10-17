@@ -1090,7 +1090,7 @@ pub fn spinner(ui: &mut Ui, size: f32, color: Color32) -> Response {
     let spinning = theme::anim_secs(ui.ctx(), 1.0) > 0.0;
     let time = if spinning {
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+            .request_repaint_after(std::time::Duration::from_millis(80));
         ui.input(|i| i.time) as f32
     } else {
         0.15
