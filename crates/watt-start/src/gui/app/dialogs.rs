@@ -103,52 +103,45 @@ pub(crate) fn show_dialog<R>(
     let max_body = (screen.height() - 188.0 - subtitle_h).max(80.0);
     let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !egui::Popup::is_any_open(ctx);
 
+    // The card is the modal's own frame. A second Area on the same order is moved under the
+    // backdrop the moment the backdrop is pressed (`Area` calls `move_to_top`), which leaves
+    // every control in the dialog unable to take a click until Escape.
+    let p = theme::palette(ctx);
+    let shadow = ctx.global_style().visuals.window_shadow;
     let modal = egui::Modal::new(id)
         .backdrop_color(egui::Color32::from_black_alpha(140))
-        .frame(egui::Frame::NONE)
+        .frame(
+            egui::Frame::new()
+                .fill(p.bg_card)
+                .stroke(egui::Stroke::new(1.0, p.line))
+                .corner_radius(16.0)
+                .inner_margin(20.0)
+                .shadow(shadow),
+        )
+        .area(egui::Modal::default_area(id).fade_in(false))
         .show(ctx, |ui| {
-            let p = theme::palette(ui.ctx());
-            let shadow = ui.style().visuals.window_shadow;
-            egui::Area::new(id.with("panel"))
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .order(egui::Order::Foreground)
-                .interactable(true)
-                .movable(false)
-                .fade_in(false)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::new()
-                        .fill(p.bg_card)
-                        .stroke(egui::Stroke::new(1.0, p.line))
-                        .corner_radius(16.0)
-                        .inner_margin(20.0)
-                        .shadow(shadow)
-                        .show(ui, |ui| {
-                            ui.set_min_width(inner_w);
-                            ui.set_max_width(inner_w);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(title)
-                                        .font(theme::semibold(20.0))
-                                        .color(p.text_bright),
-                                )
-                                .truncate(),
-                            );
-                            if let Some(subtitle) = subtitle {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(subtitle)
-                                            .font(theme::regular(13.0))
-                                            .color(p.text_muted),
-                                    )
-                                    .truncate(),
-                                );
-                            }
-                            let mut dialog_ui = DialogUi { ui, max_body };
-                            add_contents(&mut dialog_ui)
-                        })
-                        .inner
-                })
-                .inner
+            ui.set_min_width(inner_w);
+            ui.set_max_width(inner_w);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(title)
+                        .font(theme::semibold(20.0))
+                        .color(p.text_bright),
+                )
+                .truncate(),
+            );
+            if let Some(subtitle) = subtitle {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(subtitle)
+                            .font(theme::regular(13.0))
+                            .color(p.text_muted),
+                    )
+                    .truncate(),
+                );
+            }
+            let mut dialog_ui = DialogUi { ui, max_body };
+            add_contents(&mut dialog_ui)
         });
 
     let backdrop = modal.backdrop_response.clicked();
@@ -303,9 +296,16 @@ pub(crate) fn fresh_linked() -> SourceChoice {
 }
 
 /// Display-name field. Returns whether the text changed. Focuses once.
-pub(crate) fn display_field(ui: &mut egui::Ui, display: &mut String, focus: &mut bool) -> bool {
+///
+/// `id_salt` keeps the undo history of New instance and Duplicate apart.
+pub(crate) fn display_field(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    display: &mut String,
+    focus: &mut bool,
+) -> bool {
     field_label(ui, "Name");
-    let response = widgets::text_input(ui, display, "Display name", f32::INFINITY);
+    let response = widgets::text_input_with_id(ui, id_salt, display, "Display name", f32::INFINITY);
     if *focus {
         response.request_focus();
         *focus = false;
@@ -318,12 +318,14 @@ pub(crate) fn display_field(ui: &mut egui::Ui, display: &mut String, focus: &mut
 /// Returns `(dir_changed, edit_clicked)`.
 pub(crate) fn dir_line(
     ui: &mut egui::Ui,
+    id_salt: &str,
     dir: &mut String,
     edit_dir: &mut bool,
     focus_dir: &mut bool,
 ) -> (bool, bool) {
     if *edit_dir {
-        let response = widgets::text_input(ui, dir, "directory-name", f32::INFINITY);
+        let response =
+            widgets::text_input_with_id(ui, id_salt, dir, "directory-name", f32::INFINITY);
         if *focus_dir {
             response.request_focus();
             *focus_dir = false;
@@ -607,12 +609,18 @@ fn duplicate_body(
     taken: &[String],
     action: &mut FormAction,
 ) -> bool {
-    let display_changed = display_field(ui, &mut state.display, &mut state.focus_display);
+    let display_changed = display_field(
+        ui,
+        "dup-display",
+        &mut state.display,
+        &mut state.focus_display,
+    );
     if !state.dir_edited {
         state.dir = unique_dir(&slugify(&state.display), taken);
     }
     let (dir_changed, edit_clicked) = dir_line(
         ui,
+        "dup-dir",
         &mut state.dir,
         &mut state.edit_dir,
         &mut state.focus_dir,
@@ -670,7 +678,8 @@ fn confirm_body(ui: &mut egui::Ui, confirm: &mut super::Confirm) -> bool {
         )
         .wrap(),
     );
-    let response = widgets::text_input(ui, &mut confirm.typed, &name, f32::INFINITY);
+    let response =
+        widgets::text_input_with_id(ui, "confirm-type", &mut confirm.typed, &name, f32::INFINITY);
     let focus_id = confirm_focus_id();
     let already = ui
         .ctx()

@@ -331,13 +331,20 @@ fn new_instance_body(
     default_channel: &str,
     action: &mut FormAction,
 ) -> bool {
-    let display_changed =
-        dialogs::display_field(ui, &mut state.display_name, &mut state.focus_display);
+    // 6px between a label and its control; `add_space(6)` plus that gap is a 12px section break.
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let display_changed = dialogs::display_field(
+        ui,
+        "new-display",
+        &mut state.display_name,
+        &mut state.focus_display,
+    );
     if !state.name_edited {
         state.name = dialogs::slugify(&state.display_name);
     }
     let (dir_changed, edit_clicked) = dialogs::dir_line(
         ui,
+        "new-dir",
         &mut state.name,
         &mut state.edit_dir,
         &mut state.focus_dir,
@@ -358,13 +365,13 @@ fn new_instance_body(
         dialogs::error_line(ui, err);
     }
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     dialogs::field_label(ui, "Colour");
     if swatches(ui, &mut state.color) {
         action.interacted = true;
     }
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     dialogs::field_label(ui, "Source");
     if source_cards(
         ui,
@@ -377,13 +384,13 @@ fn new_instance_body(
         action.interacted = true;
     }
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     dialogs::field_label(ui, "Mods");
-    if mod_cards(ui, &mut state.mod_preset) {
+    if mod_preset_row(ui, &mut state.mod_preset) {
         action.interacted = true;
     }
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     widgets::switch_row(
         ui,
         &mut state.build_now,
@@ -503,7 +510,13 @@ fn source_cards(
         "A checkout on this machine.",
         |ui| {
             if let SourceChoice::Linked { path, .. } = source {
-                widgets::text_input(ui, path, "Checkout path", ui.available_width());
+                widgets::text_input_with_id(
+                    ui,
+                    (channel_id, "path"),
+                    path,
+                    "Checkout path",
+                    ui.available_width(),
+                );
             }
         },
     )
@@ -528,36 +541,53 @@ fn source_cards(
     true
 }
 
-fn mod_cards(ui: &mut egui::Ui, preset: &mut ModPreset) -> bool {
-    let mut picked = false;
-    for (choice, title, description) in [
-        (
-            ModPreset::Essentials,
-            ModPreset::Essentials.label(),
-            "The mods most worlds want.",
-        ),
-        (
-            ModPreset::EssentialsDevToolkit,
-            ModPreset::EssentialsDevToolkit.label(),
-            "Essentials, plus overlays and debug tools.",
-        ),
-        (
-            ModPreset::Vanilla,
-            "Vanilla",
-            "The game as shipped, with no mods.",
-        ),
-    ] {
-        if widgets::choice_card_plain(ui, *preset == choice, title, description).clicked() {
-            *preset = choice;
-            picked = true;
-        }
+/// Compact preset picker: one segmented control and the selected preset's description.
+fn mod_preset_row(ui: &mut egui::Ui, preset: &mut ModPreset) -> bool {
+    let mut idx = match *preset {
+        ModPreset::Essentials => 0,
+        ModPreset::EssentialsDevToolkit => 1,
+        ModPreset::Vanilla => 2,
+    };
+    let changed = widgets::segmented(
+        ui,
+        "new-instance-mods",
+        &mut idx,
+        &[
+            ("Essentials", None),
+            ("+ Developer Toolkit", None),
+            ("Vanilla", None),
+        ],
+    );
+    if changed {
+        *preset = match idx {
+            1 => ModPreset::EssentialsDevToolkit,
+            2 => ModPreset::Vanilla,
+            _ => ModPreset::Essentials,
+        };
     }
-    picked
+    let description = match *preset {
+        ModPreset::Essentials => "The mods most worlds want.",
+        ModPreset::EssentialsDevToolkit => "Essentials, plus overlays and debug tools.",
+        ModPreset::Vanilla => "The game as shipped, with no mods.",
+    };
+    let p = theme::palette(ui.ctx());
+    ui.label(
+        egui::RichText::new(description)
+            .font(theme::regular(12.0))
+            .color(p.text_muted),
+    );
+    changed
 }
 
 fn channel_field(ui: &mut egui::Ui, id_salt: &str, channel: &mut String, branches: &[String]) {
     if branches.is_empty() {
-        widgets::text_input(ui, channel, "Channel", ui.available_width());
+        widgets::text_input_with_id(
+            ui,
+            (id_salt, "text"),
+            channel,
+            "Channel",
+            ui.available_width(),
+        );
         return;
     }
     let shown = if channel.is_empty() {
@@ -565,7 +595,7 @@ fn channel_field(ui: &mut egui::Ui, id_salt: &str, channel: &mut String, branche
     } else {
         channel.clone()
     };
-    let width = ui.available_width().clamp(140.0, 420.0);
+    let width = ui.available_width().min(420.0);
     egui::ComboBox::from_id_salt(id_salt)
         .width(width)
         .selected_text(shown)
