@@ -1,14 +1,22 @@
-//! The Forge: the animated build/update display, and the small cube icons and spinners used
-//! around the launcher.
+//! The Forge: build and update progress, drawn in the instance page's content area.
 //!
-//! Everything is drawn with egui's painter (no textures, no assets). Animations follow
-//! `ui.ctx()` time and request repaints only while something moves.
+//! The voxel cube stays (it is the launcher's mark) but the old lightning, orbiting dots,
+//! brightness wave and bounce are gone. Motion is a slow turn, a short drop as voxels appear,
+//! a white-hot glow while linking, and a spark burst on success. With animations off the cube
+//! holds a fixed angle and every placement is already settled.
+//!
+//! Repaints are requested only while something is moving. A running op with animations off asks
+//! for one repaint a second so the elapsed clock keeps ticking.
 
 use std::f32::consts::TAU;
+use std::time::Duration;
 
 use egui::{Color32, Id, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, vec2};
-use watt_core::events::{Phase, Recovery};
-use watt_core::view::{OpView, PhaseState};
+use watt_core::events::{OpKind, OpOutcome, Phase, PhaseOutcome, Recovery};
+use watt_core::view::{OpView, PhaseState, PhaseView};
+
+use crate::gui::theme::{self, Palette};
+use crate::gui::widgets::{self, Button, Icon, Size, Variant};
 
 /// Look of the forge.
 #[derive(Clone, Debug)]
@@ -17,7 +25,7 @@ pub struct ForgeStyle {
     pub accent: egui::Color32,
     /// Animations on (`settings.appearance.animations`); off = a static cube and plain bars.
     pub animate: bool,
-    /// How long the previous comparable build took, for the estimate ("last build took 12 min").
+    /// How long the previous comparable build took, for the estimate ("about 11 min left").
     pub expected_ms: Option<u64>,
     /// The instance's shown name.
     pub title: String,
@@ -36,67 +44,47 @@ pub struct ForgeResponse {
     /// "Done"/"Close" after the op finished.
     pub close: bool,
     /// A recovery button after a failure.
-    pub recovery: Option<watt_core::events::Recovery>,
+    pub recovery: Option<Recovery>,
     /// "Play" after a successful build/update.
     pub play: bool,
 }
 
-/// Max width of the content column below the cube: everything (status text, phase chips,
-/// buttons, the error box, the log) is centred under the cube within this width rather than
-/// stretching edge to edge or drifting to the left.
+/// Max width of the status column under the cube.
 const CONTENT_MAX_WIDTH: f32 = 640.0;
-
-/// Run `add_contents` in a column centred horizontally in `ui`, capped at [`CONTENT_MAX_WIDTH`].
-fn centered_column(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    ui.vertical_centered(|ui| {
-        ui.set_max_width(CONTENT_MAX_WIDTH.min(ui.available_width()));
-        add_contents(ui);
-    });
-}
-
-/// Centre a row of `n` buttons horizontally, by padding before it with exactly enough space that
-/// the row's known total width lands in the middle, and shrinking each button (down to a floor)
-/// so the row never overflows the column. `ui.horizontal` always claims the full available width
-/// for its own block regardless of its content's width, so letting `vertical_centered` try to
-/// centre that block doesn't work; padding the content itself does.
-fn centered_button_row(ui: &mut Ui, n: usize, add_contents: impl FnOnce(&mut Ui, f32)) {
-    let spacing = ui.spacing().item_spacing.x;
-    let available = ui.available_width();
-    let button_w = if n == 0 {
-        PREFERRED_BUTTON_WIDTH
-    } else {
-        ((available - (n.saturating_sub(1)) as f32 * spacing) / n as f32)
-            .clamp(MIN_BUTTON_WIDTH, PREFERRED_BUTTON_WIDTH)
-    };
-    let total = n as f32 * button_w + (n.saturating_sub(1)) as f32 * spacing;
-    let pad = ((available - total) / 2.0).max(0.0);
-    ui.horizontal(|ui| {
-        ui.add_space(pad);
-        add_contents(ui, button_w);
-    });
-}
-
+/// Side inset so nothing sits on the content edge.
+const SIDE_INSET: f32 = 16.0;
 /// How many voxels make up the cube (3x3x3).
 const N_VOXELS: usize = 27;
-/// How long a voxel's drop-in-and-bounce animation lasts.
-const PLACE_ANIM_SECS: f64 = 0.4;
-/// How long the finish-spark burst lasts.
-const SPARK_SECS: f64 = 1.0;
-/// Rotation period, in seconds, for a full turn of the cube.
+/// Drop-in duration. Ease-out cubic, no bounce.
+const DROP_SECS: f32 = 0.25;
+/// How far a voxel falls, in grid units.
+const DROP_HEIGHT: f32 = 1.2;
+/// White flash after a voxel lands.
+const FLASH_SECS: f32 = 0.30;
+/// Success spark burst.
+const SPARK_SECS: f64 = 0.8;
+/// One full turn of the cube.
 const ROTATE_SECS: f32 = 14.0;
+/// Resting yaw: three faces, not aligned to an axis.
+const BASE_YAW: f32 = 0.62;
+/// Fixed camera tilt.
+const TILT: f32 = -0.34;
+/// Progress bar width.
+const BAR_WIDTH: f32 = 420.0;
+/// Stepper dot diameter.
+const DOT: f32 = 14.0;
 
-/// Per-op animation memory, kept in egui's temporary data so placements and finish animations
-/// stay smooth across frames and restart cleanly for a new op.
+/// Per-op animation memory. Kept in egui temp data so a new op starts clean.
 #[derive(Clone, Debug)]
 struct ForgeState {
     /// The op this state belongs to; a mismatch means "start fresh".
     op_id: String,
-    /// `ctx` time each voxel (in spiral placement order) was placed, if placed yet.
+    /// `ctx` time each voxel (spiral order) was placed, if placed yet.
     voxel_time: [Option<f64>; N_VOXELS],
-    /// `ctx` time the op's outcome was first observed (drives the finish animation).
-    finish_time: Option<f64>,
-    /// A small counter mixed into the arc/spark RNG seed so bolts look different over time.
-    tick: u64,
+    /// `ctx` time the outcome was first seen. Freezes the cube's yaw.
+    settled_at: Option<f64>,
+    /// Set when a failure is first shown, so the log opens once.
+    log_opened_for_failure: bool,
 }
 
 impl ForgeState {
@@ -104,8 +92,8 @@ impl ForgeState {
         Self {
             op_id,
             voxel_time: [None; N_VOXELS],
-            finish_time: None,
-            tick: 0,
+            settled_at: None,
+            log_opened_for_failure: false,
         }
     }
 }
@@ -116,7 +104,9 @@ impl Default for ForgeState {
     }
 }
 
-/// Draw the full forge for an op into the available space.
+/// Draw the forge into the available rect (the instance page's content area).
+///
+/// The column scrolls only when the rect is too short for the cube plus the status block.
 pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
     let now = ui.ctx().input(|i| i.time);
     let state_id = Id::unique("watt-start-forge").with(&view.op_id);
@@ -126,176 +116,250 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
     if state.op_id != view.op_id {
         state = ForgeState::fresh(view.op_id.clone());
     }
-    state.tick = state.tick.wrapping_add(1);
 
-    let fraction = view.fraction();
-    update_voxel_times(&mut state, fraction, now, style.animate);
-    let just_finished = view.outcome.is_some() && state.finish_time.is_none();
-    if just_finished {
-        state.finish_time = Some(now);
-    }
-    if view.outcome.is_none() {
-        state.finish_time = None;
+    update_voxel_times(&mut state, view.fraction(), now, style.animate);
+    if view.outcome.is_some() {
+        if state.settled_at.is_none() {
+            state.settled_at = Some(now);
+        }
+    } else {
+        state.settled_at = None;
     }
 
-    let finish_age = state.finish_time.map(|t| now - t);
-    let spark_burst = style.animate && finish_age.is_some_and(|age| age < SPARK_SECS);
-    let animating = style.animate && (view.running() || spark_burst);
+    let failed = matches!(view.outcome, Some(OpOutcome::Failed { .. }));
+    if failed && !state.log_opened_for_failure {
+        state.log_opened_for_failure = true;
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(log_open_id(view), true));
+    }
+
+    let avail = ui.available_size();
+    let layout = forge_layout(avail.y);
+    let rest = estimate_rest_height(view);
+    let top_pad = ((avail.y - layout.cube_h - rest) * 0.5).max(0.0);
 
     let mut response = ForgeResponse::default();
+    egui::ScrollArea::vertical()
+        .id_salt(("forge-scroll", &view.op_id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if top_pad > 1.0 {
+                ui.add_space(top_pad);
+            }
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(SIDE_INSET as i8, layout.frame_v))
+                .show(ui, |ui| {
+                    let (cube_rect, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), layout.cube_h),
+                        Sense::hover(),
+                    );
+                    draw_cube(ui, cube_rect, view, style, &state, now);
 
-    ui.vertical(|ui| {
-        let avail = ui.available_rect_before_wrap();
-        // Sized from both available width and height, with a floor, so the whole column (cube,
-        // headline, bar, chips, buttons, the collapsed log header) fits without scrolling at
-        // ordinary window sizes; a very wide window doesn't get a wall-sized cube either.
-        let cube_h = (avail.width() * 0.5)
-            .min(avail.height() * 0.38)
-            .clamp(140.0, 420.0);
-        // The rest of the panel (status text, chips, buttons, the collapsed log header) takes
-        // roughly this much height at most; centre the whole block vertically by padding above
-        // it when there's slack, rather than leaving it stranded at the top with empty space
-        // below. Deliberately generous (rather than tight) so this never *under*-estimates and
-        // pushes the buttons off the bottom; below the minimum supported size the content no
-        // longer fits at all even with no padding, so a scroll area (rather than silent
-        // clipping) keeps the buttons reachable.
-        const REST_H: f32 = 430.0;
-        let top_pad = ((avail.height() - cube_h - REST_H) / 2.0).max(0.0);
-        egui::ScrollArea::vertical()
-            .id_salt("forge-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if top_pad > 1.0 {
-                    ui.add_space(top_pad);
-                }
-                let (cube_rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), cube_h), Sense::hover());
-                draw_cube(ui, cube_rect, view, style, &state, now, finish_age);
-
-                ui.add_space(10.0);
-                centered_column(ui, |ui| {
-                    draw_status_block(ui, view, style, now);
-                    ui.add_space(10.0);
-                    draw_phase_checklist(ui, view, style);
-                    ui.add_space(12.0);
-                    response = draw_buttons(ui, view, style);
-                    ui.add_space(8.0);
-                    draw_log_section(ui, view);
+                    ui.add_space(layout.after_cube);
+                    let column = ui.available_width().min(CONTENT_MAX_WIDTH);
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(column);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        draw_status_block(ui, view, style, layout.tight_status);
+                        if !view.phases.is_empty() {
+                            ui.add_space(layout.before_stepper);
+                            draw_stepper(ui, view, style, now);
+                        }
+                        ui.add_space(layout.before_buttons);
+                        response = draw_buttons(ui, view);
+                        ui.add_space(layout.before_log);
+                        draw_log(ui, view, failed);
+                    });
+                    ui.add_space(layout.tail);
                 });
-            });
-    });
+        });
 
+    request_motion_repaint(ui, view, style, &state, now);
     ui.ctx().data_mut(|d| d.insert_temp(state_id, state));
-    if animating {
-        ui.ctx().request_repaint();
-    }
     response
 }
 
-/// Record the moment (in `ctx` time) each voxel first becomes visible, as `fraction` grows.
-/// Voxels never un-place even if `fraction` were to shrink (it doesn't, in practice).
+/// Record when each voxel first becomes visible. Placements stick.
+///
+/// With animation off, the time is back-dated so the drop and the flash are already over.
 fn update_voxel_times(state: &mut ForgeState, fraction: f32, now: f64, animate: bool) {
     for k in 0..N_VOXELS {
         let threshold = (k + 1) as f32 / N_VOXELS as f32;
         if fraction >= threshold && state.voxel_time[k].is_none() {
-            // With animation off, back-date the placement so no bounce/flash is seen.
             state.voxel_time[k] = Some(if animate {
                 now
             } else {
-                now - PLACE_ANIM_SECS * 2.0
+                now - f64::from(DROP_SECS + FLASH_SECS) - 0.05
             });
         }
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Phase colours and energy
-// ---------------------------------------------------------------------------------------------
+/// Cube band and the gaps under it.
+///
+/// The spec band is `clamp(0.34 × height, 160, 300)`. That band plus the status column is
+/// taller than the 590×400 content area, which pushed Cancel and Hide under the fold. When
+/// the height is short the band shrinks (never below [`CUBE_MIN`]) and the gaps tighten, so
+/// the running column stays on screen. A failed op with its log open may still scroll.
+struct ForgeLayout {
+    cube_h: f32,
+    after_cube: f32,
+    before_stepper: f32,
+    before_buttons: f32,
+    before_log: f32,
+    tail: f32,
+    frame_v: i8,
+    tight_status: bool,
+}
 
-/// The phase's base colour, before blending with the instance accent.
-fn phase_base_color(phase: Option<Phase>) -> Color32 {
-    match phase {
-        Some(Phase::Fetch | Phase::Checkout) => Color32::from_rgb(70, 210, 230),
-        Some(Phase::Lock) => Color32::from_rgb(160, 110, 240),
-        Some(Phase::Toolchain | Phase::WaitForBuild) => Color32::from_rgb(130, 140, 160),
-        Some(Phase::Compile) => Color32::from_rgb(255, 170, 40),
-        Some(Phase::Link) => Color32::from_rgb(255, 231, 150),
-        Some(Phase::Install | Phase::Launch) => Color32::from_rgb(70, 230, 120),
-        Some(Phase::Prepare | Phase::Backup | Phase::Cleanup) | None => {
-            Color32::from_rgb(150, 160, 180)
+/// Shortest cube band that still holds the tilted cube at the minimum camera scale.
+const CUBE_MIN: f32 = 112.0;
+
+fn forge_layout(avail_y: f32) -> ForgeLayout {
+    let ideal = (avail_y * 0.34).clamp(160.0, 300.0);
+    // Status + stepper + buttons + collapsed log, including the frame margins.
+    // Measured from the spacious 980×600 render and padded so a couple of pixels
+    // of rounding cannot grow a scrollbar.
+    const STACK: f32 = 320.0;
+    if avail_y >= ideal + STACK {
+        return ForgeLayout {
+            cube_h: ideal,
+            after_cube: 12.0,
+            before_stepper: 16.0,
+            before_buttons: 16.0,
+            before_log: 12.0,
+            tail: 8.0,
+            frame_v: 4,
+            tight_status: false,
+        };
+    }
+    // Tight stack is the spacious one minus the gap cuts below (~48px).
+    const TIGHT_STACK: f32 = 276.0;
+    ForgeLayout {
+        cube_h: (avail_y - TIGHT_STACK).clamp(CUBE_MIN, ideal),
+        after_cube: 8.0,
+        before_stepper: 8.0,
+        before_buttons: 8.0,
+        before_log: 8.0,
+        tail: 4.0,
+        frame_v: 0,
+        tight_status: true,
+    }
+}
+
+/// Generous height of everything under the cube, used only to centre the block.
+///
+/// Over-estimating drops the top padding (the block sits a little high) rather than pushing
+/// the buttons into the scroll.
+fn estimate_rest_height(view: &OpView) -> f32 {
+    let mut h = 28.0;
+    match &view.outcome {
+        Some(OpOutcome::Ok { summary }) => {
+            if !summary.is_empty() {
+                h += 24.0;
+            }
+            h += 22.0;
+        }
+        Some(OpOutcome::Cancelled) => h += 46.0,
+        Some(OpOutcome::Failed { error, .. }) => {
+            let lines = error.lines().count().clamp(2, 8);
+            h += 36.0 + lines as f32 * 16.0;
+            h += 24.0;
+        }
+        None => {
+            h += 28.0 + 48.0 + 24.0 + 22.0;
+            if view.current == Some(Phase::Link) {
+                h += 20.0;
+            }
+            if !view.detail.is_empty() || view.progress.is_some() {
+                h += 20.0;
+            }
         }
     }
+    if !view.phases.is_empty() {
+        h += 16.0 + 40.0;
+    }
+    h += 16.0 + 40.0;
+    if matches!(view.outcome, Some(OpOutcome::Failed { ref recovery, .. }) if recovery.len() >= 3) {
+        h += 44.0;
+    }
+    h += 12.0 + 32.0;
+    if matches!(view.outcome, Some(OpOutcome::Failed { .. })) {
+        let lines = view.log.len().clamp(1, 6);
+        h += 16.0 + 28.0 + lines as f32 * 16.0;
+    }
+    h + 24.0
 }
 
-/// Blend a phase's base colour with the instance's accent, and add any slow breathing pulse.
-fn phase_color(phase: Option<Phase>, accent: Color32, now: f64, animate: bool) -> Color32 {
-    let base = phase_base_color(phase).lerp_to_gamma(accent, 0.3);
-    match phase {
-        Some(Phase::Toolchain | Phase::WaitForBuild) if animate => {
-            let breathe = 0.78 + 0.22 * (now * TAU as f64 / 3.2).sin() as f32;
-            base.gamma_multiply(breathe)
-        }
-        Some(Phase::Link) if animate => {
-            // A slow pale-yellow/cyan cross-fade under the fast white-hot brightness pulse.
-            let tint_t = 0.5 + 0.5 * (now * TAU as f64 / 4.0).sin() as f32;
-            let cyan = Color32::from_rgb(185, 235, 255);
-            let tinted = base.lerp_to_gamma(cyan, tint_t * 0.22);
-            let pulse = 0.9 + 0.15 * (now * TAU as f64 / 0.9).sin() as f32;
-            tinted.gamma_multiply(pulse)
-        }
-        _ => base,
+fn request_motion_repaint(
+    ui: &Ui,
+    view: &OpView,
+    style: &ForgeStyle,
+    state: &ForgeState,
+    now: f64,
+) {
+    let dropping = style.animate
+        && state
+            .voxel_time
+            .iter()
+            .flatten()
+            .any(|t0| now - t0 < f64::from(DROP_SECS + FLASH_SECS));
+    let success = matches!(view.outcome, Some(OpOutcome::Ok { .. }));
+    let sparking =
+        style.animate && success && state.settled_at.is_some_and(|t| now - t < SPARK_SECS);
+    if style.animate && (view.running() || dropping || sparking) {
+        ui.ctx().request_repaint();
+    } else if view.running() {
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
 }
-
-/// Whether arcs/electrons crackle around the cube for this phase.
-fn phase_is_energetic(phase: Option<Phase>) -> bool {
-    matches!(phase, Some(Phase::Compile | Phase::Link))
-}
-
-const LINK_LINES: &[&str] = &[
-    "Fat LTO: rustc is looking at the whole game at once...",
-    "Stitching the voxel engine to the game...",
-    "The linker is laying every wire at once.",
-    "No percentage here: this part just takes a while.",
-    "Final optimisation pass across every crate...",
-];
 
 // ---------------------------------------------------------------------------------------------
-// Tiny deterministic PRNG (no external crate: xorshift32)
+// Phase colour
 // ---------------------------------------------------------------------------------------------
 
-struct Rng(u32);
-
-impl Rng {
-    fn new(seed: u32) -> Self {
-        Self(seed | 1)
-    }
-
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x
-    }
-
-    /// `0.0..1.0`.
-    fn next_f32(&mut self) -> f32 {
-        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    fn range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + self.next_f32() * (hi - lo)
+/// Work phases are Volt, waiting is neutral, linking is white-hot.
+///
+/// The instance accent tints Volt only, and only a little: Link, failure and cancel stay
+/// readable as themselves.
+fn phase_color(phase: Option<Phase>, accent: Color32, p: &Palette) -> Color32 {
+    let base = match phase {
+        Some(Phase::Link) => p.hot,
+        Some(Phase::WaitForBuild) | None => p.neutral,
+        Some(
+            Phase::Prepare
+            | Phase::Fetch
+            | Phase::Checkout
+            | Phase::Backup
+            | Phase::Lock
+            | Phase::Toolchain
+            | Phase::Compile
+            | Phase::Install
+            | Phase::Launch
+            | Phase::Cleanup,
+        ) => p.volt,
+    };
+    if base == p.volt {
+        base.lerp_to_gamma(accent, 0.12)
+    } else {
+        base
     }
 }
 
-fn seed_from(op_id: &str, salt: u64) -> u32 {
-    let mut h: u64 = 0x9e37_79b9_7f4a_7c15 ^ salt;
-    for b in op_id.bytes() {
-        h = h.wrapping_mul(1_099_511_628_211).wrapping_add(u64::from(b));
+fn cube_color(view: &OpView, accent: Color32, p: &Palette) -> Color32 {
+    match view.outcome {
+        Some(OpOutcome::Ok { .. }) => p.volt.lerp_to_gamma(accent, 0.12),
+        Some(OpOutcome::Failed { .. }) => p.bad,
+        Some(OpOutcome::Cancelled) => p.neutral,
+        None => phase_color(view.current, accent, p),
     }
-    (h ^ (h >> 32)) as u32
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,8 +408,7 @@ impl Camera {
     }
 }
 
-/// Spiral order of the 9 cells in one 3x3 layer (clockwise from the top-left corner, ending in
-/// the centre), as `(gx, gz)` with each in `0..3`.
+/// Spiral order of the 9 cells in one 3x3 layer (clockwise from the top-left, ending centre).
 const LAYER_SPIRAL: [(i32, i32); 9] = [
     (0, 0),
     (1, 0),
@@ -358,7 +421,7 @@ const LAYER_SPIRAL: [(i32, i32); 9] = [
     (1, 1),
 ];
 
-/// The 27 voxel grid coordinates, in placement order (bottom layer first, each layer a spiral).
+/// The 27 voxel grid coordinates, bottom layer first, each layer a spiral.
 fn voxel_order() -> [(i32, i32, i32); N_VOXELS] {
     let mut out = [(0, 0, 0); N_VOXELS];
     let mut k = 0;
@@ -371,19 +434,6 @@ fn voxel_order() -> [(i32, i32, i32); N_VOXELS] {
     out
 }
 
-/// Ease-out "bounce": overshoots past 1.0 briefly, then settles, for a satisfying drop-in.
-fn ease_out_bounce(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t < 1.0 {
-        // A damped sine riding an ease-out curve: a quick drop that overshoots once.
-        let decay = (-6.0 * t).exp();
-        1.0 - decay * ((1.0 - t) * 9.0).cos()
-    } else {
-        1.0
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 fn draw_cube(
     ui: &mut Ui,
     rect: Rect,
@@ -391,56 +441,36 @@ fn draw_cube(
     style: &ForgeStyle,
     state: &ForgeState,
     now: f64,
-    finish_age: Option<f64>,
 ) {
+    let p = theme::palette(ui.ctx());
     let painter = ui.painter_at(rect);
-    let failed = matches!(
-        view.outcome,
-        Some(watt_core::events::OpOutcome::Failed { .. })
-    );
-    let cancelled = matches!(view.outcome, Some(watt_core::events::OpOutcome::Cancelled));
-    let dimmed = failed || cancelled;
-
-    // A per-op phase offset so every run starts at a different (non axis-aligned) angle, rather
-    // than always opening with the same pose.
-    let yaw_offset = (seed_from(&view.op_id, 0xA11CE) as f32 / u32::MAX as f32) * TAU;
-    let yaw = if style.animate {
-        yaw_offset + (now as f32 / ROTATE_SECS) * TAU
+    let yaw = cube_yaw(style, view, state, now);
+    let short = rect.width().min(rect.height());
+    // Spec: scale = (short side × 0.14), clamped. The short side is the cube rect's.
+    // A band under 160px makes that a speck, so grow it until the silhouette keeps
+    // about 18px of air. 4.15 is the settled cube's screen height per unit of scale.
+    let spec_scale = (short * 0.14).clamp(14.0, 48.0);
+    let scale = if rect.height() < 160.0 {
+        let fitted = ((rect.height() - 36.0) / 4.15).clamp(14.0, 48.0);
+        spec_scale.max(fitted)
     } else {
-        yaw_offset + 0.4
+        spec_scale
     };
-    let tilt: f32 = -0.27;
-
-    let short_side = rect.width().min(rect.height() * 1.6);
-    let scale = (short_side * 0.14).clamp(14.0, 60.0);
     let cam = Camera {
-        centre: Pos2::new(rect.center().x, rect.center().y - rect.height() * 0.06),
+        centre: rect.center(),
         scale,
         focal: 4.6,
     };
 
-    let phase = view.current;
-    let base_color = if failed {
-        Color32::from_rgb(190, 70, 70)
-    } else if cancelled {
-        Color32::from_gray(120)
-    } else {
-        phase_color(phase, style.accent, now, style.animate)
-    };
-    let hot = matches!(phase, Some(Phase::Link));
-    let light_dir = {
-        let v = Vec3::new(0.35, 0.85, 0.38);
-        v.normalized()
-    };
+    let color = cube_color(view, style.accent, &p);
+    let light_dir = Vec3::new(0.35, 0.85, 0.38).normalized();
+    let linking = view.running() && view.current == Some(Phase::Link);
 
-    if hot {
-        draw_glow_backdrop(&painter, &cam, base_color, now, style.animate);
+    if linking {
+        draw_link_glow(&painter, rect, now, style.animate, &p);
     }
 
     let order = voxel_order();
-    // Spark burst position memory: pick a stable set of directions from the seed.
-    let spark_seed = seed_from(&view.op_id, 0xF00D);
-
     let mut quads: Vec<(f32, [Pos2; 4], Color32)> = Vec::with_capacity(27 * 3);
     let mut ghost_lines: Vec<[Pos2; 2]> = Vec::new();
 
@@ -453,124 +483,99 @@ fn draw_cube(
         let center = match placed_at {
             Some(t0) => {
                 let age = (now - t0) as f32;
-                let drop = if style.animate && age < PLACE_ANIM_SECS as f32 {
-                    let t = age / PLACE_ANIM_SECS as f32;
-                    (1.0 - ease_out_bounce(t)) * 2.4
+                let drop = if style.animate && age < DROP_SECS {
+                    (1.0 - ease_out_cubic(age / DROP_SECS)) * DROP_HEIGHT
                 } else {
                     0.0
                 };
-                let settle = if dimmed {
-                    // A few voxels slump when things go wrong, farther out ones more.
-                    let slump_seed = seed_from(&view.op_id, k as u64);
-                    let slumps = slump_seed.is_multiple_of(5);
-                    if slumps { -0.18 } else { 0.0 }
-                } else {
-                    0.0
-                };
-                P3::new(gx, gy + drop + settle, gz)
+                P3::new(gx, gy + drop, gz)
             }
             None => P3::new(gx, gy, gz),
         };
 
-        if placed_at.is_none() {
-            // Ghost wireframe: draw the 12 edges of the unit cube, faint.
+        let Some(placed_at) = placed_at else {
             for edge in CUBE_EDGES {
-                let a = cube_vertex(center, edge.0).rotated(yaw, tilt);
-                let b = cube_vertex(center, edge.1).rotated(yaw, tilt);
+                let a = cube_vertex(center, edge.0).rotated(yaw, TILT);
+                let b = cube_vertex(center, edge.1).rotated(yaw, TILT);
                 ghost_lines.push([cam.project(a), cam.project(b)]);
             }
             continue;
-        }
+        };
 
-        let age = placed_at.map(|t0| (now - t0) as f32).unwrap_or(10.0);
+        let age = (now - placed_at) as f32;
         let flash = if style.animate {
-            (1.0 - age / 0.35).clamp(0.0, 1.0)
+            (1.0 - age / FLASH_SECS).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        // Indeterminate-phase brightness wave travelling through placed voxels.
-        let wave = if style.animate && view.phase_fraction().is_none() && view.running() {
-            let phase_pos = (gx + gy + gz) * 0.5;
-            0.5 + 0.5 * (now as f32 * 2.2 - phase_pos * 1.6).sin()
-        } else {
-            1.0
-        };
 
         for &(normal, face) in &CUBE_FACES {
-            let n_rot = normal.rotated(yaw, tilt);
+            let n_rot = normal.rotated(yaw, TILT);
             if n_rot.z >= -0.02 {
-                continue; // back-face cull: not visible to the camera.
+                continue;
             }
-            let verts: [P3; 4] = face.map(|v| cube_vertex(center, v).rotated(yaw, tilt));
+            let verts: [P3; 4] = face.map(|v| cube_vertex(center, v).rotated(yaw, TILT));
             let depth = (verts[0].z + verts[1].z + verts[2].z + verts[3].z) / 4.0;
             let nv = Vec3::new(n_rot.x, n_rot.y, n_rot.z);
-            let diffuse = 0.35 + 0.65 * nv.dot(light_dir).max(0.0);
-            let mut color = base_color.gamma_multiply(diffuse * wave);
+            let diffuse = 0.38 + 0.62 * nv.dot(light_dir).max(0.0);
+            let mut face_color = color.gamma_multiply(diffuse);
             if flash > 0.0 {
-                color = color.lerp_to_gamma(Color32::WHITE, flash);
-            }
-            if hot && style.animate {
-                let glow = 1.0 + 0.1 * (now as f32 * 5.0 + depth).sin().max(0.0);
-                color = color.gamma_multiply(glow);
+                face_color = face_color.lerp_to_gamma(Color32::WHITE, flash);
             }
             let pts = verts.map(|v| cam.project(v));
-            // At some rotations a side face is seen at an extreme grazing angle and projects to
-            // a near-zero-area sliver (correct geometry, but reads as a stray bright hairline);
-            // drop those rather than draw them.
-            if !is_visibly_flat(&pts) {
-                quads.push((depth, pts, color));
+            if !is_grazing_sliver(&pts) {
+                quads.push((depth, pts, face_color));
             }
         }
     }
 
-    // Ghosts first (wireframe, order doesn't matter for lines). A neutral tint (rather than the
-    // phase colour) keeps them readable as "not yet built" even during a near-white phase like
-    // Link.
-    let ghost_color = Color32::from_rgba_unmultiplied(170, 180, 195, if dimmed { 16 } else { 36 });
+    let ghost = Color32::from_rgba_unmultiplied(170, 180, 195, 36);
     for [a, b] in &ghost_lines {
-        painter.add(egui::Shape::line_segment(
-            [*a, *b],
-            Stroke::new(1.0, ghost_color),
-        ));
+        painter.add(egui::Shape::line_segment([*a, *b], Stroke::new(1.0, ghost)));
     }
 
-    // Painter's algorithm: farthest (largest camera-space z) first.
     quads.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let edge_color = Color32::from_rgba_unmultiplied(10, 10, 14, 90);
-    for (_, pts, color) in &quads {
+    for (_, pts, face_color) in &quads {
         painter.add(egui::Shape::convex_polygon(
             pts.to_vec(),
-            *color,
+            *face_color,
             Stroke::new(1.0, edge_color),
         ));
     }
 
-    if style.animate && phase_is_energetic(phase) && !dimmed {
-        draw_arcs(
-            &painter,
-            &cam,
-            yaw,
-            tilt,
-            &view.op_id,
-            state.tick,
-            base_color,
-        );
-        draw_electrons(&painter, &cam, yaw, tilt, now, base_color);
-    }
-
-    if let Some(age) = finish_age
-        && style.animate
-        && age < SPARK_SECS
-        && !dimmed
+    if style.animate
+        && matches!(view.outcome, Some(OpOutcome::Ok { .. }))
+        && let Some(t0) = state.settled_at
     {
-        draw_sparks(
-            &painter, &cam, yaw, tilt, age as f32, spark_seed, base_color,
-        );
+        let age = (now - t0) as f32;
+        if age < SPARK_SECS as f32 {
+            draw_sparks(
+                &painter,
+                rect,
+                cam.project(P3::new(0.0, 0.0, 0.0)),
+                age,
+                &view.op_id,
+                &p,
+            );
+        }
     }
 }
 
-/// A 3D vector, for lighting dot products (kept separate from [`P3`], a model-space point, so the
-/// two aren't accidentally mixed up).
+/// Yaw while running; frozen at the moment the op settled. Static when animations are off.
+fn cube_yaw(style: &ForgeStyle, view: &OpView, state: &ForgeState, now: f64) -> f32 {
+    if !style.animate {
+        return BASE_YAW;
+    }
+    let t = if view.running() {
+        now
+    } else {
+        state.settled_at.unwrap_or(now)
+    };
+    BASE_YAW + (t as f32 / ROTATE_SECS) * TAU
+}
+
+/// A 3D vector for lighting. Separate from [`P3`] so a point and a direction aren't mixed.
 #[derive(Clone, Copy)]
 struct Vec3 {
     x: f32,
@@ -595,11 +600,10 @@ impl Vec3 {
     }
 }
 
-/// Half-extent of a voxel (full size `2 * VOXEL_H`), with a gap of `1.0 - 2*VOXEL_H` to its
-/// neighbours in the 1-unit grid.
+/// Half-extent of a voxel. The gap to the next cell is `1.0 - 2*VOXEL_H`.
 const VOXEL_H: f32 = 0.42;
 
-/// The 8 corners of a unit cube, indexed 0..8 (bit 0 = +x, bit 1 = +y, bit 2 = +z).
+/// The 8 corners of a unit cube (bit 0 = +x, bit 1 = +y, bit 2 = +z).
 fn cube_vertex(center: P3, corner: u8) -> P3 {
     let sx = if corner & 1 != 0 { 1.0 } else { -1.0 };
     let sy = if corner & 2 != 0 { 1.0 } else { -1.0 };
@@ -611,7 +615,7 @@ fn cube_vertex(center: P3, corner: u8) -> P3 {
     )
 }
 
-/// The 12 edges of a unit cube, as pairs of corner indices (for ghost wireframes).
+/// The 12 edges of a unit cube, as corner-index pairs (ghost wireframes).
 const CUBE_EDGES: [(u8, u8); 12] = [
     (0, 1),
     (0, 2),
@@ -627,8 +631,7 @@ const CUBE_EDGES: [(u8, u8); 12] = [
     (6, 7),
 ];
 
-/// The 6 faces of a unit cube: outward normal (model space, unrotated) and its 4 corners in
-/// winding order.
+/// The 6 faces: outward normal (unrotated) and 4 corners in winding order.
 const CUBE_FACES: [(P3Lit, [u8; 4]); 6] = [
     (P3Lit(1.0, 0.0, 0.0), [1, 3, 7, 5]),
     (P3Lit(-1.0, 0.0, 0.0), [0, 4, 6, 2]),
@@ -638,8 +641,7 @@ const CUBE_FACES: [(P3Lit, [u8; 4]); 6] = [
     (P3Lit(0.0, 0.0, -1.0), [0, 2, 3, 1]),
 ];
 
-/// A `const`-friendly stand-in for [`P3`] (which isn't itself usable in a `const` array because
-/// of its rotation methods living in a non-const impl); converted with [`P3Lit::rotated`].
+/// A `const`-friendly stand-in for [`P3`].
 #[derive(Clone, Copy)]
 struct P3Lit(f32, f32, f32);
 
@@ -649,184 +651,329 @@ impl P3Lit {
     }
 }
 
-/// A soft glow behind the cube (a handful of concentric translucent circles, since there's no
-/// blur to reach for) for the white-hot Link phase.
-fn draw_glow_backdrop(
-    painter: &egui::Painter,
-    cam: &Camera,
-    color: Color32,
-    now: f64,
-    animate: bool,
-) {
-    let center = cam.project(P3::new(0.0, 0.0, 0.0));
+/// Radial glow for the Link phase. The mesh is a disc, so it never clips to a square.
+///
+/// Centre is hot at alpha 70; the ring is transparent. Radius is `min(w, h) * 0.45`,
+/// pulsing ±10% over 0.9s, and capped so the disc stays inside `rect`.
+fn draw_link_glow(painter: &egui::Painter, rect: Rect, now: f64, animate: bool, p: &Palette) {
+    let center = rect.center();
+    let base = rect.width().min(rect.height()) * 0.45;
     let pulse = if animate {
-        0.85 + 0.15 * (now * TAU as f64 / 0.9).sin() as f32
+        1.0 + 0.10 * (now * f64::from(TAU) / 0.9).sin() as f32
     } else {
         1.0
     };
-    const RINGS: usize = 5;
-    for i in (1..=RINGS).rev() {
-        let t = i as f32 / RINGS as f32;
-        let radius = cam.scale * (1.5 + t * 2.2) * pulse;
-        let alpha = (46.0 * (1.0 - t * 0.8)) as u8;
-        painter.add(egui::Shape::circle_filled(
-            center,
-            radius,
-            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
-        ));
+    let cap = rect.width().min(rect.height()) * 0.5 - 1.0;
+    let radius = (base * pulse).clamp(1.0, cap.max(1.0));
+
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, theme::with_alpha(p.hot, 70));
+    const RING: u32 = 32;
+    for i in 0..RING {
+        let a = TAU * (i as f32) / RING as f32;
+        let pos = center + Vec2::new(a.cos(), a.sin()) * radius;
+        mesh.colored_vertex(pos, theme::with_alpha(p.hot, 0));
     }
+    for i in 0..RING {
+        let a = 1 + i;
+        let b = 1 + (i + 1) % RING;
+        mesh.add_triangle(0, a, b);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
-/// Jagged lightning arcs between random cube corners, regenerated every 70-120ms.
-fn draw_arcs(
-    painter: &egui::Painter,
-    cam: &Camera,
-    yaw: f32,
-    tilt: f32,
-    op_id: &str,
-    tick: u64,
-    color: Color32,
-) {
-    // Bucket time into ~90ms windows so the bolts hold still briefly rather than vibrating.
-    let window = (tick / 6).max(1);
-    let mut rng = Rng::new(seed_from(op_id, window));
-    let n_arcs = 2 + (rng.next_u32() % 2) as usize;
-    let extent = VOXEL_H * 3.0 + VOXEL_H; // reach just past the outer voxel faces.
-    for _ in 0..n_arcs {
-        let a_corner = rng.range(0.0, TAU);
-        let a_h = rng.range(-1.0, 1.0);
-        let b_corner = a_corner + rng.range(1.2, TAU - 1.2);
-        let b_h = rng.range(-1.0, 1.0);
-        let a = P3::new(
-            extent * a_corner.cos(),
-            extent * a_h,
-            extent * a_corner.sin(),
-        )
-        .rotated(yaw, tilt);
-        let b = P3::new(
-            extent * b_corner.cos(),
-            extent * b_h,
-            extent * b_corner.sin(),
-        )
-        .rotated(yaw, tilt);
-        let pa = cam.project(a);
-        let pb = cam.project(b);
-        let segments = 6;
-        let mut points = Vec::with_capacity(segments + 1);
-        points.push(pa);
-        let dir = pb - pa;
-        let perp = Vec2::new(-dir.y, dir.x).normalized();
-        for s in 1..segments {
-            let t = s as f32 / segments as f32;
-            let jitter = rng.range(-10.0, 10.0) * (1.0 - (t - 0.5).abs() * 2.0).max(0.2);
-            points.push(pa + dir * t + perp * jitter);
-        }
-        points.push(pb);
-        let glow = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60);
-        painter.add(egui::Shape::line(points.clone(), Stroke::new(5.0, glow)));
-        painter.add(egui::Shape::line(
-            points,
-            Stroke::new(1.6, Color32::WHITE.lerp_to_gamma(color, 0.2)),
-        ));
-    }
-}
-
-/// Small glowing dots orbiting the cube on tilted elliptical paths, with short fading trails.
-fn draw_electrons(
-    painter: &egui::Painter,
-    cam: &Camera,
-    yaw: f32,
-    tilt: f32,
-    now: f64,
-    color: Color32,
-) {
-    const ORBITS: [(f32, f32, f32, f32); 3] = [
-        // (radius, vertical squash, tilt offset, speed)
-        (2.1, 0.5, 0.3, 1.3),
-        (2.4, 0.35, -0.5, -0.9),
-        (1.9, 0.6, 1.1, 1.7),
-    ];
-    for (i, &(r, squash, orbit_tilt, speed)) in ORBITS.iter().enumerate() {
-        let phase = now as f32 * speed + i as f32 * 2.1;
-        for trail in 0..5 {
-            let t = phase - trail as f32 * 0.07;
-            let p = P3::new(
-                r * t.cos(),
-                r * squash * t.sin() * orbit_tilt.cos(),
-                r * t.sin() * orbit_tilt.sin(),
-            )
-            .rotated(yaw, tilt);
-            let pos = cam.project(p);
-            let alpha = ((5 - trail) as f32 / 5.0 * 200.0) as u8;
-            let c = Color32::from_rgba_unmultiplied(
-                color.r().saturating_add(40),
-                color.g().saturating_add(40),
-                color.b().saturating_add(40),
-                alpha,
-            );
-            let radius = if trail == 0 { 3.2 } else { 1.6 };
-            painter.add(egui::Shape::circle_filled(pos, radius, c));
-        }
-    }
-}
-
-/// A once-only burst of sparks radiating from the cube on a successful finish.
+/// Twenty-four sparks, travelling no further than the cube rect.
 fn draw_sparks(
     painter: &egui::Painter,
-    cam: &Camera,
-    yaw: f32,
-    tilt: f32,
+    rect: Rect,
+    origin: Pos2,
     age: f32,
-    seed: u32,
-    color: Color32,
+    op_id: &str,
+    p: &Palette,
 ) {
-    let mut rng = Rng::new(seed);
-    let n = 34;
+    let mut rng = Rng::new(seed_from(op_id, 0xF00D));
     let t = (age / SPARK_SECS as f32).clamp(0.0, 1.0);
-    let fade = (1.0 - t).powf(1.3);
-    for _ in 0..n {
-        let dir_yaw = rng.range(0.0, TAU);
-        let dir_h = rng.range(-0.7, 0.7);
-        let speed = rng.range(2.2, 5.2);
-        let dist = speed * t;
-        let p =
-            P3::new(dist * dir_yaw.cos(), dist * dir_h, dist * dir_yaw.sin()).rotated(yaw, tilt);
-        let pos = cam.project(p);
-        let c = Color32::from_rgba_unmultiplied(
-            255,
-            color.g().saturating_add(60),
-            color.b(),
-            (fade * 255.0) as u8,
-        );
-        painter.add(egui::Shape::circle_filled(pos, 3.0 * fade.max(0.25), c));
+    let fade = (1.0 - t).powf(1.2);
+    // Part-way out immediately, then easing to the rim, so the burst is a ring and not a blob
+    // sitting on the cube.
+    let travel = 0.5 + 0.5 * ease_out_cubic(t);
+    let max_r = inset_radius(origin, rect).max(8.0);
+    for _ in 0..24 {
+        let ang = rng.range(0.0, TAU);
+        let reach = rng.range(0.58, 0.90) * max_r;
+        let hot = rng.range(0.3, 0.95);
+        let pos = origin + Vec2::new(ang.cos(), ang.sin()) * (reach * travel);
+        if !rect.contains(pos) {
+            continue;
+        }
+        let color = p.volt.lerp_to_gamma(Color32::WHITE, hot);
+        let alpha = (fade * 230.0) as u8;
+        let room = inset_radius(pos, rect).max(1.0);
+        let radius = (1.3 + 2.8 * fade * (0.8 + 0.45 * hot)).min(room);
+        let halo = (radius * 1.9).min(room);
+        if halo > radius + 0.5 {
+            painter.circle_filled(
+                pos,
+                halo,
+                theme::with_alpha(color, (f32::from(alpha) * 0.16) as u8),
+            );
+        }
+        painter.circle_filled(pos, radius, theme::with_alpha(color, alpha));
+    }
+}
+
+/// Distance from `origin` to the nearest edge of `rect`, minus a hair of padding.
+fn inset_radius(origin: Pos2, rect: Rect) -> f32 {
+    (origin.x - rect.left())
+        .min(rect.right() - origin.x)
+        .min(origin.y - rect.top())
+        .min(rect.bottom() - origin.y)
+        - 3.0
+}
+
+/// True when a projected face is a near-zero-area sliver (a grazing angle's hairline).
+fn is_grazing_sliver(pts: &[Pos2; 4]) -> bool {
+    let mut area = 0.0_f32;
+    for i in 0..4 {
+        let p0 = pts[i];
+        let p1 = pts[(i + 1) % 4];
+        area += p0.x * p1.y - p1.x * p0.y;
+    }
+    area = area.abs() / 2.0;
+    let diag = (pts[0] - pts[2]).length().max((pts[1] - pts[3]).length());
+    diag > 10.0 && area < diag * diag * 0.08
+}
+
+struct Rng(u32);
+
+impl Rng {
+    fn new(seed: u32) -> Self {
+        Self(seed | 1)
     }
 
-    // A quick expanding shockwave ring, brightest right at the start.
-    let ring_model_r = 0.3 + 3.4 * t;
-    let edge = P3::new(ring_model_r, 0.0, 0.0).rotated(yaw, tilt);
-    let center2d = cam.project(P3::new(0.0, 0.0, 0.0));
-    let ring_px_r = (cam.project(edge) - center2d).length();
-    let ring_alpha = (fade * 190.0) as u8;
-    painter.add(egui::Shape::circle_stroke(
-        center2d,
-        ring_px_r,
-        Stroke::new(
-            2.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, ring_alpha),
-        ),
-    ));
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + self.next_f32() * (hi - lo)
+    }
+}
+
+fn seed_from(op_id: &str, salt: u64) -> u32 {
+    let mut h: u64 = 0x9e37_79b9_7f4a_7c15 ^ salt;
+    for b in op_id.bytes() {
+        h = h.wrapping_mul(1_099_511_628_211).wrapping_add(u64::from(b));
+    }
+    (h ^ (h >> 32)) as u32
 }
 
 // ---------------------------------------------------------------------------------------------
-// Status block: headline, phase, percentage, bar, ticker, elapsed/estimate
+// Status block
 // ---------------------------------------------------------------------------------------------
 
-fn format_duration(ms: u64) -> String {
-    let secs = ms / 1000;
-    format!("{}:{:02}", secs / 60, secs % 60)
+fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, tight: bool) {
+    let p = theme::palette(ui.ctx());
+    let elapsed = style.elapsed_ms.unwrap_or(view.t_ms);
+
+    match &view.outcome {
+        Some(OpOutcome::Ok { summary }) => {
+            let play = offers_play(view.op);
+            centered_line(
+                ui,
+                &ready_headline(&style.title, play),
+                theme::semibold(20.0),
+                p.text_bright,
+            );
+            if !summary.is_empty() {
+                ui.add_space(6.0);
+                centered_line(ui, summary, theme::regular(14.0), p.text);
+            }
+            ui.add_space(6.0);
+            centered_line(
+                ui,
+                &meta_line(view, style, elapsed),
+                theme::regular(12.0),
+                p.text_muted,
+            );
+        }
+        Some(OpOutcome::Cancelled) => {
+            centered_line(ui, "Cancelled", theme::semibold(20.0), p.neutral);
+            ui.add_space(6.0);
+            centered_line(
+                ui,
+                "Stopped on request.",
+                theme::regular(14.0),
+                p.text_muted,
+            );
+            ui.add_space(6.0);
+            centered_line(
+                ui,
+                &meta_line(view, style, elapsed),
+                theme::regular(12.0),
+                p.text_muted,
+            );
+        }
+        Some(OpOutcome::Failed { phase, error, .. }) => {
+            centered_line(ui, &failed_while(*phase), theme::semibold(20.0), p.bad);
+            ui.add_space(10.0);
+            draw_error_box(ui, error, &p);
+            ui.add_space(8.0);
+            centered_line(
+                ui,
+                &meta_line(view, style, elapsed),
+                theme::regular(12.0),
+                p.text_muted,
+            );
+        }
+        None => draw_running_status(ui, view, style, elapsed, &p, tight),
+    }
 }
 
-fn format_minutes(ms: u64) -> String {
+fn draw_running_status(
+    ui: &mut Ui,
+    view: &OpView,
+    style: &ForgeStyle,
+    elapsed: u64,
+    p: &Palette,
+    tight: bool,
+) {
+    let color = phase_color(view.current, style.accent, p);
+    let gap = if tight { 4.0 } else { 8.0 };
+    centered_line(
+        ui,
+        action_headline(view.op),
+        theme::semibold(20.0),
+        p.text_bright,
+    );
+    let phase_title = current_phase_title(view);
+    if !phase_title.is_empty() {
+        ui.add_space(4.0);
+        centered_line(ui, &phase_title, theme::regular(14.0), color);
+    }
+    ui.add_space(gap);
+    let pct = format!("{:.0}%", view.fraction() * 100.0);
+    centered_line(ui, &pct, theme::semibold(32.0), p.text_bright);
+    ui.add_space(gap);
+    draw_progress(ui, view.fraction(), color, p);
+    if let Some(detail) = progress_detail(view) {
+        ui.add_space(gap);
+        centered_line(ui, &detail, theme::mono(12.0), p.text_muted);
+    }
+    if view.current == Some(Phase::Link) {
+        ui.add_space(if tight { 2.0 } else { 4.0 });
+        centered_line(
+            ui,
+            "Fat LTO: rustc is looking at the whole game at once",
+            theme::regular(12.0),
+            p.text_muted,
+        );
+    }
+    ui.add_space(if tight { 4.0 } else { 6.0 });
+    centered_line(
+        ui,
+        &meta_line(view, style, elapsed),
+        theme::regular(12.0),
+        p.text_muted,
+    );
+}
+
+fn centered_line(ui: &mut Ui, text: &str, font: egui::FontId, color: Color32) {
+    ui.label(egui::RichText::new(text).font(font).color(color));
+}
+
+fn draw_progress(ui: &mut Ui, fraction: f32, color: Color32, p: &Palette) {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let width = ui.available_width().min(BAR_WIDTH);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 8.0), Sense::hover());
+    let shown = ui.ctx().animate_value_with_time(
+        ui.scope_id().with("forge-bar"),
+        fraction,
+        theme::anim_secs(ui.ctx(), 0.3),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, p.bg_raised);
+    let fill_w = rect.width() * shown.clamp(0.0, 1.0);
+    if fill_w > 0.5 {
+        let fill = Rect::from_min_size(rect.min, vec2(fill_w, rect.height()));
+        let glow = Rect::from_min_size(
+            pos_offset(fill.min, -1.0, -2.0),
+            vec2(fill_w + 2.0, rect.height() + 4.0),
+        );
+        painter.rect_filled(glow, 6.0, theme::with_alpha(color, 48));
+        painter.rect_filled(fill, 4.0, color);
+    }
+}
+
+fn pos_offset(p: Pos2, dx: f32, dy: f32) -> Pos2 {
+    Pos2::new(p.x + dx, p.y + dy)
+}
+
+/// "196 / 437 crates · voxel_engine", or just the detail line when it isn't a crate count.
+fn progress_detail(view: &OpView) -> Option<String> {
+    let detail = ellipsise(view.detail.trim(), 56);
+    match view.progress {
+        Some((done, Some(total))) if view.current == Some(Phase::Compile) && total > 0 => {
+            let mut line = format!("{done} / {total} crates");
+            if !detail.is_empty() {
+                line.push_str(" · ");
+                line.push_str(&detail);
+            }
+            Some(line)
+        }
+        Some((done, Some(total))) if total > 0 && view.current != Some(Phase::Compile) => {
+            let mut line = format!("{done} / {total}");
+            if !detail.is_empty() {
+                line.push_str(" · ");
+                line.push_str(&detail);
+            }
+            Some(line)
+        }
+        _ if !detail.is_empty() => Some(detail),
+        _ => None,
+    }
+}
+
+fn meta_line(view: &OpView, style: &ForgeStyle, elapsed_ms: u64) -> String {
+    let mut line = format!("Elapsed {}", format_clock(elapsed_ms));
+    if let Some(rest) = remaining_estimate(view, style, elapsed_ms) {
+        line.push_str(" · ");
+        line.push_str(&rest);
+    }
+    line
+}
+
+/// Rate-based remainder once the op has moved, otherwise the previous build's duration.
+/// Hidden when there is nothing meaningful to say.
+fn remaining_estimate(view: &OpView, style: &ForgeStyle, elapsed_ms: u64) -> Option<String> {
+    if !view.running() {
+        return None;
+    }
+    let fraction = view.fraction();
+    if fraction >= 0.05 && elapsed_ms > 0 {
+        let total = elapsed_ms as f32 / fraction;
+        let remaining = (total - elapsed_ms as f32).max(0.0) as u64;
+        if remaining < 45_000 {
+            return None;
+        }
+        return Some(format!("{} left", about_minutes(remaining)));
+    }
+    style
+        .expected_ms
+        .filter(|ms| *ms >= 45_000)
+        .map(|ms| format!("{} left", about_minutes(ms)))
+}
+
+fn about_minutes(ms: u64) -> String {
     let mins = (ms + 30_000) / 60_000;
     if mins <= 1 {
         "about a minute".to_owned()
@@ -835,394 +982,358 @@ fn format_minutes(ms: u64) -> String {
     }
 }
 
+fn format_clock(ms: u64) -> String {
+    let secs = ms / 1000;
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
 fn ellipsise(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_owned()
     } else {
         let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-        out.push_str("...");
+        out.push('…');
         out
     }
 }
 
-/// The big headline text: the biggest, brightest line in the panel.
-fn headline(ui: &mut Ui, text: impl Into<String>, color: Color32) {
-    ui.label(
-        egui::RichText::new(text.into())
-            .size(30.0)
-            .strong()
-            .color(color),
-    );
-}
-
-fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
-    let phase = view.current;
-    let phase_col = phase_color(phase, style.accent, now, style.animate);
-    let bright = Color32::from_gray(245);
-
-    match &view.outcome {
-        Some(watt_core::events::OpOutcome::Ok { summary }) => {
-            ui.vertical_centered(|ui| {
-                headline(ui, "Ready", Color32::from_rgb(120, 230, 150));
-                ui.add_space(4.0);
-                ui.label(summary);
-            });
-            return;
-        }
-        Some(watt_core::events::OpOutcome::Cancelled) => {
-            ui.vertical_centered(|ui| {
-                headline(ui, "Cancelled", Color32::from_gray(190));
-                ui.add_space(4.0);
-                ui.label("Stopped on request.");
-            });
-            return;
-        }
-        Some(watt_core::events::OpOutcome::Failed { phase, error, .. }) => {
-            ui.vertical_centered(|ui| {
-                let where_ = phase.map(|p| p.title()).unwrap_or("the run");
-                headline(
-                    ui,
-                    format!("Failed in {where_}"),
-                    Color32::from_rgb(230, 110, 110),
-                );
-            });
-            ui.add_space(8.0);
-            draw_error_box(ui, error);
-            return;
-        }
-        None => {}
+fn action_headline(op: Option<OpKind>) -> &'static str {
+    match op {
+        Some(OpKind::Build) => "Building",
+        Some(OpKind::Update) => "Updating",
+        Some(OpKind::Mods) => "Applying mod changes",
+        Some(OpKind::Create) => "Creating",
+        Some(OpKind::Duplicate) => "Copying",
+        Some(OpKind::Rollback) => "Rolling back",
+        Some(OpKind::Play) => "Launching",
+        Some(OpKind::SetSource) => "Changing source",
+        Some(OpKind::Remove) => "Removing",
+        Some(OpKind::CheckUpdates) => "Checking for updates",
+        Some(OpKind::Maintenance) => "Cleaning up",
+        None => "Working",
     }
-
-    ui.vertical_centered(|ui| {
-        let verb = view
-            .op
-            .map(watt_core::events::OpKind::verb)
-            .unwrap_or("Working on");
-        headline(ui, format!("{verb} {}", style.title), bright);
-        ui.add_space(3.0);
-        ui.label(
-            egui::RichText::new(
-                phase
-                    .map(|p| p.title().to_owned())
-                    .or_else(|| view.phases.last().map(|p| p.title.clone()))
-                    .unwrap_or_default(),
-            )
-            .size(16.0)
-            .color(phase_col),
-        );
-        ui.add_space(2.0);
-
-        let fraction = view.fraction();
-        ui.label(
-            egui::RichText::new(format!("{:.0}%", fraction * 100.0))
-                .size(22.0)
-                .strong()
-                .color(Color32::from_gray(205)),
-        );
-
-        let bar_rect = ui
-            .allocate_exact_size(vec2(ui.available_width().min(420.0), 10.0), Sense::hover())
-            .0;
-        draw_glow_bar(ui, bar_rect, fraction, phase_col, style.animate, now);
-
-        if phase == Some(Phase::Compile)
-            && let Some((done, Some(total))) = view.progress
-        {
-            ui.label(format!("{done} / {total} crates"));
-        }
-
-        if !view.detail.is_empty() {
-            ui.label(ellipsise(&view.detail, 70));
-        }
-
-        if phase == Some(Phase::Link) {
-            let idx = ((now / 6.0) as usize) % LINK_LINES.len();
-            ui.label(egui::RichText::new(LINK_LINES[idx]).italics());
-        }
-
-        // A single label (rather than a row of several) so it centres correctly using its own
-        // natural width, the same way the headline above it does.
-        let mut meta = format!("Elapsed {}", format_duration(view.t_ms));
-        if let Some(expected) = style.expected_ms {
-            if fraction < 0.001 {
-                meta.push_str(&format!(
-                    "   ·   last build took {}",
-                    format_minutes(expected)
-                ));
-            } else if fraction >= 0.05 {
-                let estimate_total = view.t_ms as f32 / fraction;
-                let remaining = (estimate_total - view.t_ms as f32).max(0.0) as u64;
-                meta.push_str(&format!("   ·   {} left", format_minutes(remaining)));
-            }
-        }
-        ui.label(meta);
-    });
 }
 
-/// The failure error text: a framed, rounded, slightly red-tinted, scrollable monospace box.
-fn draw_error_box(ui: &mut Ui, error: &str) {
+fn ready_headline(title: &str, play: bool) -> String {
+    if !play {
+        return "Done".to_owned();
+    }
+    let title = title.trim();
+    if title.is_empty() {
+        "Ready to play".to_owned()
+    } else {
+        format!("{title} is ready")
+    }
+}
+
+fn failed_while(phase: Option<Phase>) -> String {
+    match phase {
+        Some(phase) => format!("Failed while {}", uncapitalise(phase.title())),
+        None => "Failed".to_owned(),
+    }
+}
+
+fn uncapitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn current_phase_title(view: &OpView) -> String {
+    if let Some(phase) = view.current
+        && let Some(found) = view.phases.iter().find(|p| p.phase == phase)
+    {
+        return found.title.clone();
+    }
+    view.current
+        .map(|p| p.title().to_owned())
+        .unwrap_or_default()
+}
+
+/// Play is offered after an op that leaves an instance ready to launch.
+fn offers_play(op: Option<OpKind>) -> bool {
+    matches!(
+        op,
+        Some(
+            OpKind::Create
+                | OpKind::Update
+                | OpKind::Mods
+                | OpKind::Build
+                | OpKind::Rollback
+                | OpKind::SetSource
+                | OpKind::Duplicate
+        )
+    )
+}
+
+fn draw_error_box(ui: &mut Ui, error: &str, p: &Palette) {
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(90, 30, 30, 50))
-        .stroke(Stroke::new(
-            1.0,
-            Color32::from_rgba_unmultiplied(220, 100, 100, 130),
-        ))
-        .corner_radius(6.0)
-        .inner_margin(10.0)
+        .fill(theme::with_alpha(p.bad, 20))
+        .stroke(Stroke::new(1.0, theme::with_alpha(p.bad, 128)))
+        .corner_radius(12.0)
+        .inner_margin(12.0)
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_min_width(ui.available_width());
             egui::ScrollArea::vertical()
                 .id_salt("forge-error")
                 .max_height(150.0)
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    ui.style_mut().interaction.selectable_labels = true;
                     ui.add(
-                        egui::Label::new(egui::RichText::new(error).monospace())
-                            .selectable(true)
-                            .wrap(),
+                        egui::Label::new(
+                            egui::RichText::new(error)
+                                .font(theme::mono(12.0))
+                                .color(p.text),
+                        )
+                        .selectable(true)
+                        .wrap(),
                     );
                 });
         });
 }
 
-fn draw_glow_bar(ui: &mut Ui, rect: Rect, fraction: f32, color: Color32, animate: bool, now: f64) {
-    let painter = ui.painter_at(rect);
-    let bg = Color32::from_rgba_unmultiplied(255, 255, 255, 18);
-    painter.add(egui::Shape::rect_filled(rect, rect.height() / 2.0, bg));
-    let fill_w = rect.width() * fraction.clamp(0.0, 1.0);
-    if fill_w > 1.0 {
-        let fill_rect = Rect::from_min_size(rect.min, vec2(fill_w, rect.height()));
-        let glow_alpha = if animate {
-            (160.0 + 60.0 * (now * 4.0).sin() as f32) as u8
-        } else {
-            200
-        };
-        let glow = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), glow_alpha);
-        painter.add(egui::Shape::rect_filled(
-            fill_rect,
-            rect.height() / 2.0,
-            glow,
-        ));
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
-// Phase checklist
+// Stepper
 // ---------------------------------------------------------------------------------------------
 
-/// Width of the painter-drawn marker in a phase chip, plus the gap before its label.
-const CHIP_MARKER_W: f32 = 14.0 + 6.0;
-/// The chip `Frame`'s margin (both sides) and stroke, added on top of marker+label width.
-const CHIP_FRAME_W: f32 = 2.0 * 8.0 + 2.0;
-/// Horizontal gap between chips sharing a row, and between wrapped rows.
-const CHIP_GAP: f32 = 6.0;
-
-/// Lay the phase chips out ourselves (rather than a single scrollable row): measure each chip's
-/// width, pack them into as many rows as needed to fit the column, and centre each row — so nothing
-/// is clipped at the edge and nothing relies on a scrollbar the user might not notice.
-fn draw_phase_checklist(ui: &mut Ui, view: &OpView, style: &ForgeStyle) {
-    if view.phases.is_empty() {
+/// One row of dots. Labels sit under every dot when they fit; otherwise only the active phase
+/// is labelled, so nothing overlaps.
+fn draw_stepper(ui: &mut Ui, view: &OpView, style: &ForgeStyle, now: f64) {
+    let phases = &view.phases;
+    let n = phases.len();
+    if n == 0 {
         return;
     }
-    let now = ui.ctx().input(|i| i.time);
-    let font_id = egui::TextStyle::Body.resolve(ui.style());
-
-    let chips: Vec<(String, Color32, bool, f32)> = view
-        .phases
-        .iter()
-        .map(|phase_view| {
-            let (label, color, strong) = chip_text(phase_view, style, now);
-            let text_w = ui
-                .painter()
-                .layout_no_wrap(label.clone(), font_id.clone(), color)
-                .size()
-                .x;
-            let width = CHIP_MARKER_W + text_w + CHIP_FRAME_W;
-            (label, color, strong, width)
-        })
-        .collect();
-
-    let avail_w = ui.available_width();
-    let mut rows: Vec<Vec<usize>> = Vec::new();
-    let mut row: Vec<usize> = Vec::new();
-    let mut row_w = 0.0_f32;
-    for (i, &(.., width)) in chips.iter().enumerate() {
-        let added = width + if row.is_empty() { 0.0 } else { CHIP_GAP };
-        if !row.is_empty() && row_w + added > avail_w {
-            rows.push(std::mem::take(&mut row));
-            row_w = 0.0;
-        }
-        let added = width + if row.is_empty() { 0.0 } else { CHIP_GAP };
-        row_w += added;
-        row.push(i);
-    }
-    if !row.is_empty() {
-        rows.push(row);
-    }
-
-    for (r, indices) in rows.iter().enumerate() {
-        if r > 0 {
-            ui.add_space(CHIP_GAP);
-        }
-        let row_width: f32 = indices.iter().map(|&i| chips[i].3).sum::<f32>()
-            + CHIP_GAP * (indices.len().saturating_sub(1)) as f32;
-        let pad = ((avail_w - row_width) / 2.0).max(0.0);
-        ui.horizontal(|ui| {
-            ui.add_space(pad);
-            for (n, &i) in indices.iter().enumerate() {
-                if n > 0 {
-                    ui.add_space(CHIP_GAP);
-                }
-                let (label, color, strong, _) = &chips[i];
-                draw_phase_chip(ui, &view.phases[i], style, now, label, *color, *strong);
-            }
-        });
-    }
-}
-
-/// The label, colour and emphasis for a phase chip (shared by measurement and drawing, so they
-/// never drift apart). Durations under a second are dropped rather than shown as "0 s".
-fn chip_text(
-    phase_view: &watt_core::view::PhaseView,
-    style: &ForgeStyle,
-    now: f64,
-) -> (String, Color32, bool) {
-    match phase_view.state {
-        PhaseState::Pending => (phase_view.title.clone(), Color32::from_gray(110), false),
-        PhaseState::Running => (
-            phase_view.title.clone(),
-            phase_color(Some(phase_view.phase), style.accent, now, style.animate),
-            true,
-        ),
-        PhaseState::Done(outcome) => {
-            let tag = match outcome {
-                watt_core::events::PhaseOutcome::Ok if phase_view.duration_ms >= 1000 => {
-                    format_chip_duration(phase_view.duration_ms)
-                }
-                watt_core::events::PhaseOutcome::Ok => String::new(),
-                watt_core::events::PhaseOutcome::Cached => "cached".to_owned(),
-                watt_core::events::PhaseOutcome::Skipped => "skipped".to_owned(),
-                watt_core::events::PhaseOutcome::Failed => String::new(),
-            };
-            let col = if outcome == watt_core::events::PhaseOutcome::Failed {
-                Color32::from_rgb(220, 90, 90)
-            } else {
-                Color32::from_gray(190)
-            };
-            let label = if tag.is_empty() {
-                phase_view.title.clone()
-            } else {
-                format!("{} ({tag})", phase_view.title)
-            };
-            (label, col, false)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_phase_chip(
-    ui: &mut Ui,
-    phase_view: &watt_core::view::PhaseView,
-    style: &ForgeStyle,
-    now: f64,
-    label: &str,
-    color: Color32,
-    strong: bool,
-) {
-    let text = if strong {
-        egui::RichText::new(label).color(color).strong()
-    } else {
-        egui::RichText::new(label).color(color)
+    let p = theme::palette(ui.ctx());
+    let avail = ui.available_width();
+    let font = theme::regular(11.0);
+    let measure = |text: &str| -> f32 {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
+            .size()
+            .x
     };
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::symmetric(8, 5))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                draw_phase_marker(ui, phase_view, style, now);
-                ui.label(text);
-            });
-        });
+
+    let full: Vec<String> = phases.iter().map(|phase| phase.title.clone()).collect();
+    let short: Vec<String> = phases
+        .iter()
+        .map(|phase| short_phase(phase.phase).to_owned())
+        .collect();
+    let full_w: Vec<f32> = full.iter().map(|s| measure(s)).collect();
+    let short_w: Vec<f32> = short.iter().map(|s| measure(s)).collect();
+
+    let (labels, pitch) = if let Some(pitch) = row_pitch(&full_w, avail) {
+        (StepLabels::Each(full), pitch)
+    } else if let Some(pitch) = row_pitch(&short_w, avail) {
+        (StepLabels::Each(short), pitch)
+    } else {
+        let index = focus_index(phases);
+        let text = if measure(&full[index]) <= avail {
+            full[index].clone()
+        } else {
+            short[index].clone()
+        };
+        let pitch = if n == 1 {
+            0.0
+        } else {
+            ((avail - DOT) / (n - 1) as f32).clamp(DOT + 4.0, 64.0)
+        };
+        (StepLabels::OnlyCurrent { index, text }, pitch)
+    };
+
+    let label_h = 15.0;
+    let row_h = DOT + 4.0 + label_h;
+    let (rect, _) = ui.allocate_exact_size(vec2(avail, row_h), Sense::hover());
+    let row_w = if n == 1 {
+        DOT
+    } else {
+        (n - 1) as f32 * pitch + DOT
+    };
+    let x0 = rect.center().x - row_w * 0.5 + DOT * 0.5;
+    let dot_y = rect.top() + DOT * 0.5;
+    let painter = ui.painter();
+
+    for i in 0..n.saturating_sub(1) {
+        let a = Pos2::new(x0 + pitch * i as f32, dot_y);
+        let b = Pos2::new(x0 + pitch * (i + 1) as f32, dot_y);
+        painter.line_segment([a, b], Stroke::new(2.0, p.line));
+    }
+
+    let spin_time = if style.animate { now as f32 } else { 0.2 };
+    for (i, phase) in phases.iter().enumerate() {
+        let center = Pos2::new(x0 + pitch * i as f32, dot_y);
+        let hit = Rect::from_center_size(center, Vec2::splat(DOT + 8.0));
+        let response = ui.interact(
+            hit,
+            ui.scope_id().with("forge-step").with(phase.phase),
+            Sense::hover(),
+        );
+        if response.hovered() {
+            painter.circle_filled(center, DOT * 0.5 + 3.0, p.wash_hover);
+        }
+        paint_step_dot(painter, center, phase, &p, spin_time);
+        response.on_hover_text(phase_tooltip(phase));
+    }
+
+    match labels {
+        StepLabels::Each(texts) => {
+            for (i, text) in texts.iter().enumerate() {
+                let center_x = x0 + pitch * i as f32;
+                paint_step_label(
+                    ui,
+                    text,
+                    center_x,
+                    rect,
+                    label_color(&phases[i].state, &p),
+                    &font,
+                );
+            }
+        }
+        StepLabels::OnlyCurrent { index, text } => {
+            let center_x = x0 + pitch * index as f32;
+            paint_step_label(
+                ui,
+                &text,
+                center_x,
+                rect,
+                label_color(&phases[index].state, &p),
+                &font,
+            );
+        }
+    }
 }
 
-/// A small painter-drawn status marker for a phase chip: a hollow circle (pending), a spinning
-/// arc or pulsing dot (running), a check mark (done), an x (failed) or a short dash
-/// (cached/skipped).
-fn draw_phase_marker(
-    ui: &mut Ui,
-    phase_view: &watt_core::view::PhaseView,
-    style: &ForgeStyle,
-    now: f64,
-) {
-    let size = 14.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    let painter = ui.painter_at(rect);
-    let center = rect.center();
-    let r = size * 0.42;
+enum StepLabels {
+    Each(Vec<String>),
+    OnlyCurrent { index: usize, text: String },
+}
 
-    match phase_view.state {
+/// Pitch that keeps adjacent labels 8px apart, or `None` when the row would exceed `avail`.
+fn row_pitch(widths: &[f32], avail: f32) -> Option<f32> {
+    let n = widths.len();
+    if n == 0 {
+        return None;
+    }
+    if n == 1 {
+        return if widths[0] <= avail { Some(0.0) } else { None };
+    }
+    let mut pitch = DOT + 10.0;
+    for pair in widths.windows(2) {
+        pitch = pitch.max(pair[0] * 0.5 + pair[1] * 0.5 + 8.0);
+    }
+    let width = (n - 1) as f32 * pitch + widths[0] * 0.5 + widths[n - 1] * 0.5;
+    if width <= avail { Some(pitch) } else { None }
+}
+
+fn focus_index(phases: &[PhaseView]) -> usize {
+    if let Some(i) = phases.iter().position(|p| p.state == PhaseState::Running) {
+        return i;
+    }
+    if let Some(i) = phases
+        .iter()
+        .position(|p| matches!(p.state, PhaseState::Done(PhaseOutcome::Failed)))
+    {
+        return i;
+    }
+    phases
+        .iter()
+        .rposition(|p| matches!(p.state, PhaseState::Done(_)))
+        .unwrap_or(0)
+}
+
+fn short_phase(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Prepare => "Prepare",
+        Phase::Fetch => "Fetch",
+        Phase::Checkout => "Unpack",
+        Phase::Backup => "Backup",
+        Phase::Lock => "Resolve",
+        Phase::Toolchain => "Tools",
+        Phase::WaitForBuild => "Waiting",
+        Phase::Compile => "Compile",
+        Phase::Link => "Link",
+        Phase::Install => "Install",
+        Phase::Launch => "Launch",
+        Phase::Cleanup => "Cleanup",
+    }
+}
+
+fn label_color(state: &PhaseState, p: &Palette) -> Color32 {
+    match state {
+        PhaseState::Running => p.text_bright,
+        PhaseState::Done(PhaseOutcome::Failed) => p.bad,
+        PhaseState::Done(PhaseOutcome::Cached | PhaseOutcome::Skipped) => p.neutral,
+        PhaseState::Pending | PhaseState::Done(PhaseOutcome::Ok) => p.text_muted,
+    }
+}
+
+fn paint_step_dot(
+    painter: &egui::Painter,
+    center: Pos2,
+    phase: &PhaseView,
+    p: &Palette,
+    spin_time: f32,
+) {
+    match phase.state {
         PhaseState::Pending => {
-            painter.add(egui::Shape::circle_stroke(
-                center,
-                r,
-                Stroke::new(1.3, Color32::from_gray(110)),
-            ));
+            painter.circle_stroke(center, 6.0, Stroke::new(1.5, p.line_strong));
         }
         PhaseState::Running => {
-            let color = phase_color(Some(phase_view.phase), style.accent, now, style.animate);
-            if style.animate {
-                let start = (now * 3.4) as f32 % TAU;
-                let sweep = TAU * 0.72;
-                let segments = 10;
-                let mut pts = Vec::with_capacity(segments + 1);
-                for i in 0..=segments {
-                    let a = start + sweep * (i as f32 / segments as f32);
-                    pts.push(center + Vec2::new(a.cos(), a.sin()) * r);
-                }
-                painter.add(egui::Shape::line(pts, Stroke::new(1.8, color)));
-                ui.ctx().request_repaint();
-            } else {
-                painter.add(egui::Shape::circle_filled(center, r * 0.6, color));
-            }
+            painter.circle_stroke(center, 6.0, Stroke::new(1.5, p.arc));
+            let spin = Rect::from_center_size(center, Vec2::splat(12.0));
+            widgets::paint_icon(painter, spin, Icon::Spinner, p.arc, spin_time);
         }
-        PhaseState::Done(outcome) => match outcome {
-            watt_core::events::PhaseOutcome::Ok => {
-                let c = Color32::from_rgb(130, 210, 150);
-                let p0 = center + Vec2::new(-r * 0.5, 0.0);
-                let p1 = center + Vec2::new(-r * 0.05, r * 0.45);
-                let p2 = center + Vec2::new(r * 0.55, -r * 0.4);
-                painter.add(egui::Shape::line(vec![p0, p1, p2], Stroke::new(2.0, c)));
-            }
-            watt_core::events::PhaseOutcome::Failed => {
-                let c = Color32::from_rgb(220, 90, 90);
-                painter.add(egui::Shape::line_segment(
-                    [
-                        center + Vec2::new(-r * 0.5, -r * 0.5),
-                        center + Vec2::new(r * 0.5, r * 0.5),
-                    ],
-                    Stroke::new(2.0, c),
-                ));
-                painter.add(egui::Shape::line_segment(
-                    [
-                        center + Vec2::new(-r * 0.5, r * 0.5),
-                        center + Vec2::new(r * 0.5, -r * 0.5),
-                    ],
-                    Stroke::new(2.0, c),
-                ));
-            }
-            watt_core::events::PhaseOutcome::Cached | watt_core::events::PhaseOutcome::Skipped => {
-                painter.add(egui::Shape::line_segment(
-                    [
-                        center + Vec2::new(-r * 0.5, 0.0),
-                        center + Vec2::new(r * 0.5, 0.0),
-                    ],
-                    Stroke::new(1.6, Color32::from_gray(110)),
-                ));
-            }
-        },
+        PhaseState::Done(PhaseOutcome::Ok) => {
+            painter.circle_filled(center, 7.0, p.volt);
+            let icon = Rect::from_center_size(center, Vec2::splat(12.0));
+            widgets::paint_icon(painter, icon, Icon::Check, p.on_accent, 0.0);
+        }
+        PhaseState::Done(PhaseOutcome::Failed) => {
+            painter.circle_filled(center, 7.0, p.bad);
+            let icon = Rect::from_center_size(center, Vec2::splat(11.0));
+            widgets::paint_icon(painter, icon, Icon::Cross, p.text_bright, 0.0);
+        }
+        PhaseState::Done(PhaseOutcome::Cached | PhaseOutcome::Skipped) => {
+            painter.circle_filled(center, 4.5, p.neutral);
+        }
     }
 }
 
-/// "40 s" / "1 min 3 s".
-fn format_chip_duration(ms: u64) -> String {
+fn paint_step_label(
+    ui: &Ui,
+    text: &str,
+    center_x: f32,
+    row: Rect,
+    color: Color32,
+    font: &egui::FontId,
+) {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), color);
+    let mut x = center_x - galley.size().x * 0.5;
+    x = x.clamp(row.left(), (row.right() - galley.size().x).max(row.left()));
+    let y = row.top() + DOT + 4.0;
+    ui.painter().galley(Pos2::new(x, y), galley, color);
+}
+
+fn phase_tooltip(phase: &PhaseView) -> String {
+    match phase.state {
+        PhaseState::Pending => format!("{} · waiting", phase.title),
+        PhaseState::Running => format!("{} · in progress", phase.title),
+        PhaseState::Done(PhaseOutcome::Ok) if phase.duration_ms >= 1000 => {
+            format!("{} · {}", phase.title, format_span(phase.duration_ms))
+        }
+        PhaseState::Done(PhaseOutcome::Ok) => phase.title.clone(),
+        PhaseState::Done(PhaseOutcome::Cached) => format!("{} · cached", phase.title),
+        PhaseState::Done(PhaseOutcome::Skipped) => format!("{} · skipped", phase.title),
+        PhaseState::Done(PhaseOutcome::Failed) => format!("{} · failed", phase.title),
+    }
+}
+
+fn format_span(ms: u64) -> String {
     let secs = ms / 1000;
     if secs >= 60 {
         format!("{} min {} s", secs / 60, secs % 60)
@@ -1235,92 +1346,158 @@ fn format_chip_duration(ms: u64) -> String {
 // Buttons
 // ---------------------------------------------------------------------------------------------
 
-/// The width every button uses when there's room: wide enough for the longest label ("Rebuild
-/// from scratch").
-const PREFERRED_BUTTON_WIDTH: f32 = 190.0;
-/// The narrowest a button is allowed to shrink to, so a long recovery row still fits the column.
-const MIN_BUTTON_WIDTH: f32 = 108.0;
+struct ForgeButton {
+    label: &'static str,
+    variant: Variant,
+    kind: ButtonKind,
+}
 
-fn draw_buttons(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
+enum ButtonKind {
+    Cancel,
+    Hide,
+    Play,
+    Close,
+    Recovery(Recovery),
+}
+
+fn draw_buttons(ui: &mut Ui, view: &OpView) -> ForgeResponse {
+    let buttons = button_row(view);
+    let gap = 8.0;
+    let widths: Vec<f32> = buttons.iter().map(|b| button_width(ui, b.label)).collect();
+    let avail = ui.available_width();
+    let rows = pack_rows(&widths, avail, gap);
+
     let mut response = ForgeResponse::default();
-    ui.spacing_mut().button_padding = vec2(16.0, 8.0);
-    ui.spacing_mut().item_spacing.x = 10.0;
-
-    let can_play = matches!(
-        view.op,
-        Some(
-            watt_core::events::OpKind::Build
-                | watt_core::events::OpKind::Update
-                | watt_core::events::OpKind::Mods
-                | watt_core::events::OpKind::Create
-        )
-    );
-    let n = match &view.outcome {
-        None => 2,
-        Some(watt_core::events::OpOutcome::Ok { .. }) => usize::from(can_play) + 1,
-        Some(watt_core::events::OpOutcome::Cancelled) => 1,
-        Some(watt_core::events::OpOutcome::Failed { recovery, .. }) => recovery.len() + 1,
-    };
-
-    centered_button_row(ui, n, |ui, w| match &view.outcome {
-        None => {
-            if secondary_button(ui, "Cancel", w).clicked() {
-                response.cancel = true;
-            }
-            if secondary_button(ui, "Hide", w).clicked() {
-                response.hide = true;
-            }
+    for (row_i, indices) in rows.iter().enumerate() {
+        if row_i > 0 {
+            ui.add_space(8.0);
         }
-        Some(watt_core::events::OpOutcome::Ok { .. }) => {
-            if can_play && primary_button(ui, "Play", style.accent, w).clicked() {
-                response.play = true;
+        let total: f32 = indices.iter().map(|&i| widths[i]).sum::<f32>()
+            + gap * indices.len().saturating_sub(1) as f32;
+        let pad = ((avail - total) * 0.5).max(0.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            // `item_spacing` is inserted before the next widget, so the pad is short by `gap`.
+            if pad > gap {
+                ui.add_space(pad - gap);
             }
-            if secondary_button(ui, "Close", w).clicked() {
-                response.close = true;
-            }
-        }
-        Some(watt_core::events::OpOutcome::Cancelled) => {
-            if secondary_button(ui, "Close", w).clicked() {
-                response.close = true;
-            }
-        }
-        Some(watt_core::events::OpOutcome::Failed { recovery, .. }) => {
-            for (i, r) in recovery.iter().enumerate() {
-                let clicked = if i == 0 {
-                    primary_button(ui, recovery_label(*r), style.accent, w).clicked()
-                } else {
-                    secondary_button(ui, recovery_label(*r), w).clicked()
-                };
+            for &i in indices {
+                let button = &buttons[i];
+                let clicked = Button::new(button.label)
+                    .variant(button.variant)
+                    .size(Size::Medium)
+                    .min_width(96.0)
+                    .show(ui)
+                    .clicked();
                 if clicked {
-                    response.recovery = Some(*r);
+                    apply_button(&mut response, &button.kind);
                 }
             }
-            if secondary_button(ui, "Close", w).clicked() {
-                response.close = true;
-            }
-        }
-    });
+        });
+    }
     response
 }
 
-/// A secondary (neutral) button, sized with comfortable padding and a 32px minimum height.
-fn secondary_button(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
-    ui.add(egui::Button::new(label).min_size(vec2(width, 32.0)))
+fn button_row(view: &OpView) -> Vec<ForgeButton> {
+    match &view.outcome {
+        None => vec![
+            ForgeButton {
+                label: "Cancel",
+                variant: Variant::Danger,
+                kind: ButtonKind::Cancel,
+            },
+            ForgeButton {
+                label: "Hide",
+                variant: Variant::Secondary,
+                kind: ButtonKind::Hide,
+            },
+        ],
+        Some(OpOutcome::Ok { .. }) if offers_play(view.op) => vec![
+            ForgeButton {
+                label: "Play",
+                variant: Variant::Primary,
+                kind: ButtonKind::Play,
+            },
+            ForgeButton {
+                label: "Close",
+                variant: Variant::Secondary,
+                kind: ButtonKind::Close,
+            },
+        ],
+        Some(OpOutcome::Ok { .. }) => vec![ForgeButton {
+            label: "Done",
+            variant: Variant::Primary,
+            kind: ButtonKind::Close,
+        }],
+        Some(OpOutcome::Cancelled) => vec![ForgeButton {
+            label: "Close",
+            variant: Variant::Secondary,
+            kind: ButtonKind::Close,
+        }],
+        Some(OpOutcome::Failed { recovery, .. }) => {
+            let mut row = Vec::with_capacity(recovery.len() + 1);
+            for (i, recovery) in recovery.iter().enumerate() {
+                row.push(ForgeButton {
+                    label: recovery_label(*recovery),
+                    variant: if i == 0 {
+                        Variant::Primary
+                    } else {
+                        Variant::Secondary
+                    },
+                    kind: ButtonKind::Recovery(*recovery),
+                });
+            }
+            row.push(ForgeButton {
+                label: "Close",
+                variant: Variant::Secondary,
+                kind: ButtonKind::Close,
+            });
+            row
+        }
+    }
 }
 
-/// The primary action button: filled with the instance's accent colour.
-fn primary_button(ui: &mut Ui, label: &str, accent: Color32, width: f32) -> egui::Response {
-    let luma = 0.299 * accent.r() as f32 + 0.587 * accent.g() as f32 + 0.114 * accent.b() as f32;
-    let text_color = if luma > 150.0 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(label).color(text_color).strong())
-            .fill(accent)
-            .min_size(vec2(width, 32.0)),
-    )
+fn apply_button(response: &mut ForgeResponse, kind: &ButtonKind) {
+    match kind {
+        ButtonKind::Cancel => response.cancel = true,
+        ButtonKind::Hide => response.hide = true,
+        ButtonKind::Play => response.play = true,
+        ButtonKind::Close => response.close = true,
+        ButtonKind::Recovery(recovery) => response.recovery = Some(*recovery),
+    }
+}
+
+fn button_width(ui: &Ui, label: &str) -> f32 {
+    let text = ui
+        .painter()
+        .layout_no_wrap(
+            label.to_owned(),
+            theme::semibold(14.0),
+            Color32::PLACEHOLDER,
+        )
+        .size()
+        .x;
+    (text + 14.0 * 2.0).max(96.0)
+}
+
+fn pack_rows(widths: &[f32], avail: f32, gap: f32) -> Vec<Vec<usize>> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut row_w = 0.0_f32;
+    for (i, width) in widths.iter().enumerate() {
+        let add = if row.is_empty() { *width } else { gap + *width };
+        if !row.is_empty() && row_w + add > avail + 0.5 {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0.0;
+        }
+        let add = if row.is_empty() { *width } else { gap + *width };
+        row_w += add;
+        row.push(i);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
 }
 
 fn recovery_label(r: Recovery) -> &'static str {
@@ -1335,47 +1512,105 @@ fn recovery_label(r: Recovery) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Log section
+// Log
 // ---------------------------------------------------------------------------------------------
 
-fn draw_log_section(ui: &mut Ui, view: &OpView) {
-    egui::CollapsingHeader::new("Log")
-        .id_salt("forge-log")
-        .default_open(false)
-        .show(ui, |ui| {
-            let start = view.log.len().saturating_sub(200);
-            egui::ScrollArea::vertical()
-                .id_salt("forge-log-scroll")
-                .max_height(160.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for line in view.log.iter().skip(start) {
-                        ui.monospace(line);
-                    }
-                });
-        });
+fn log_open_id(view: &OpView) -> Id {
+    Id::unique("watt-forge-log").with(&view.op_id)
 }
 
-/// Camera scale (relative to `size`) for a single-voxel icon cube, tuned so its silhouette fills
-/// about 90% of its `size x size` box regardless of the current rotation.
+fn log_button(ui: &mut Ui, open: bool) -> bool {
+    let icon = if open {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    Button::new("Log")
+        .variant(Variant::Ghost)
+        .size(Size::Small)
+        .icon(icon)
+        .show(ui)
+        .clicked()
+}
+
+fn draw_log(ui: &mut Ui, view: &OpView, failed: bool) {
+    let p = theme::palette(ui.ctx());
+    let id = log_open_id(view);
+    let open = ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(failed);
+    // Collapsed, the disclosure sits under the centred buttons. Open, the box is the
+    // full column width with the header at its top-left.
+    if !open {
+        if log_button(ui, false) {
+            ui.ctx().data_mut(|d| d.insert_temp(id, true));
+        }
+        return;
+    }
+    ui.vertical(|ui| {
+        ui.set_min_width(ui.available_width());
+        if log_button(ui, true) {
+            ui.ctx().data_mut(|d| d.insert_temp(id, false));
+        }
+        ui.add_space(6.0);
+        egui::Frame::new()
+            .fill(p.bg_canvas)
+            .corner_radius(12.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                egui::ScrollArea::vertical()
+                    .id_salt(("forge-log-scroll", &view.op_id))
+                    .max_height(200.0)
+                    .auto_shrink([false, true])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        if view.log.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No log yet.")
+                                    .font(theme::mono(12.0))
+                                    .color(p.text_muted),
+                            );
+                        } else {
+                            for line in &view.log {
+                                ui.label(
+                                    egui::RichText::new(line)
+                                        .font(theme::mono(12.0))
+                                        .color(p.text),
+                                );
+                            }
+                        }
+                    });
+            });
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Small cube icon and the window icon
+// ---------------------------------------------------------------------------------------------
+
+/// Camera scale (relative to `size`) for a single-voxel icon, tuned so the silhouette fills
+/// about 90% of its box.
 const ICON_CUBE_SCALE: f32 = 0.82;
 
-/// A small isometric cube icon (instance avatars, the logo). `busy` makes it spin and crackle.
+/// A small isometric cube (legacy call site). Always static.
+///
+/// `busy` used to spin the cube and draw a crackle. That slash is gone; the sidebar paints
+/// [`widgets::cube`] instead. The flag stays so existing callers keep compiling.
 pub fn cube_icon(ui: &mut Ui, size: f32, color: Color32, busy: bool) -> Response {
+    let _ = busy;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     let painter = ui.painter_at(rect);
-    let now = ui.ctx().input(|i| i.time);
-    let yaw = if busy {
-        (now as f32) * (TAU / 2.5)
-    } else {
-        0.6
-    };
-    let tilt: f32 = -0.3;
+    let yaw = 0.6_f32;
+    let tilt = -0.3_f32;
     let cam = Camera {
         centre: rect.center(),
         scale: size * ICON_CUBE_SCALE,
         focal: 4.0,
     };
+    paint_icon_cube(&painter, &cam, yaw, tilt, color);
+    response
+}
+
+fn paint_icon_cube(painter: &egui::Painter, cam: &Camera, yaw: f32, tilt: f32, color: Color32) {
     let center = P3::new(0.0, 0.0, 0.0);
     let light_dir = Vec3::new(0.35, 0.85, 0.38).normalized();
     let mut quads: Vec<(f32, [Pos2; 4], Color32)> = Vec::with_capacity(3);
@@ -1400,36 +1635,6 @@ pub fn cube_icon(ui: &mut Ui, size: f32, color: Color32, busy: bool) -> Response
             Stroke::new(1.0, edge_color),
         ));
     }
-    if busy {
-        let mut rng = Rng::new(((now * 10.0) as u32).wrapping_mul(2_654_435_761) | 1);
-        if rng.next_f32() < 0.6 {
-            let extent = VOXEL_H * 2.2;
-            let a_corner = rng.range(0.0, TAU);
-            let b_corner = a_corner + rng.range(1.0, TAU - 1.0);
-            let a = cam.project(
-                P3::new(
-                    extent * a_corner.cos(),
-                    extent * rng.range(-1.0, 1.0),
-                    extent * a_corner.sin(),
-                )
-                .rotated(yaw, tilt),
-            );
-            let b = cam.project(
-                P3::new(
-                    extent * b_corner.cos(),
-                    extent * rng.range(-1.0, 1.0),
-                    extent * b_corner.sin(),
-                )
-                .rotated(yaw, tilt),
-            );
-            painter.add(egui::Shape::line_segment(
-                [a, b],
-                Stroke::new(1.4, Color32::WHITE.lerp_to_gamma(color, 0.2)),
-            ));
-        }
-        ui.ctx().request_repaint();
-    }
-    response
 }
 
 /// The window icon: a cube in the launcher colours, as RGBA pixels (`size` x `size`).
@@ -1450,8 +1655,6 @@ pub fn app_icon_rgba(size: u32) -> Vec<u8> {
     let center = P3::new(0.0, 0.0, 0.0);
     let light_dir = Vec3::new(0.35, 0.85, 0.38).normalized();
 
-    // Build the three visible faces as polygons with flat colour, then rasterise them with a
-    // simple point-in-triangle scan (no tessellation crate available here).
     let mut polys: Vec<(f32, [Pos2; 4], Color32)> = Vec::new();
     for (i, &(normal, face)) in CUBE_FACES.iter().enumerate() {
         let n_rot = normal.rotated(yaw, tilt);
@@ -1485,8 +1688,7 @@ pub fn app_icon_rgba(size: u32) -> Vec<u8> {
         }
     }
 
-    // A simple lightning-bolt glyph cut through the centre: a thin zigzag, drawn in a bright
-    // colour (not cut as a hole, to stay legible at small sizes).
+    // A lightning-bolt glyph through the centre, bright so it stays legible at small sizes.
     let bolt_pts: [(f32, f32); 5] = [
         (0.52, 0.14),
         (0.40, 0.48),
@@ -1511,20 +1713,6 @@ pub fn app_icon_rgba(size: u32) -> Vec<u8> {
     pixels
 }
 
-/// Whether a projected quad is so thin (an extreme grazing-angle sliver) that it should be
-/// skipped rather than drawn, comparing its shoelace area against its longest diagonal squared.
-fn is_visibly_flat(pts: &[Pos2; 4]) -> bool {
-    let mut area = 0.0_f32;
-    for i in 0..4 {
-        let p0 = pts[i];
-        let p1 = pts[(i + 1) % 4];
-        area += p0.x * p1.y - p1.x * p0.y;
-    }
-    area = area.abs() / 2.0;
-    let diag = (pts[0] - pts[2]).length().max((pts[1] - pts[3]).length());
-    diag > 10.0 && area < diag * diag * 0.08
-}
-
 fn point_in_convex_quad(p: Pos2, quad: &[Pos2; 4]) -> bool {
     let mut sign = 0.0_f32;
     for i in 0..4 {
@@ -1542,8 +1730,7 @@ fn point_in_convex_quad(p: Pos2, quad: &[Pos2; 4]) -> bool {
     true
 }
 
-/// A thick line drawn directly into an RGBA buffer (for the window icon, where there's no
-/// painter to use).
+/// A thick line drawn into an RGBA buffer (the window icon has no painter).
 fn draw_line_px(pixels: &mut [u8], size: u32, a: Pos2, b: Pos2, color: Color32, width: f32) {
     let steps = ((b - a).length().ceil() as i32).max(1) * 2;
     let half = width / 2.0;

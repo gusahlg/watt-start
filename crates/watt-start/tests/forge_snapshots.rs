@@ -2,9 +2,18 @@
 //! backend) and save PNGs under `target/forge-shots/` for visual review; they don't assert pixel
 //! content (no golden images checked in), just that each scene builds and renders without
 //! panicking.
+//!
+//! `watt-start` is a binary crate, so the forge (and the theme and widget kit it draws with) is
+//! included from source. The rects match the instance page's content area: 980×600 at 1280×800,
+//! and 590×400 at 900×600.
 
-#[path = "../src/gui/forge.rs"]
-mod forge;
+// The included GUI tree is wider than this test drives.
+#![allow(dead_code)]
+
+#[path = "../src/gui/mod.rs"]
+mod gui;
+
+use gui::forge;
 
 use egui::Color32;
 use watt_core::events::{
@@ -287,6 +296,26 @@ fn failed_view(op_id: &str) -> OpView {
     view.apply(&env(
         op_id,
         seq,
+        5_100,
+        Event::Log {
+            stream: LogStream::Tool,
+            line: "error[E0308]: mismatched types".into(),
+        },
+    ));
+    seq += 1;
+    view.apply(&env(
+        op_id,
+        seq,
+        5_150,
+        Event::Log {
+            stream: LogStream::Tool,
+            line: "  --> src/world/edits.rs:42:9".into(),
+        },
+    ));
+    seq += 1;
+    view.apply(&env(
+        op_id,
+        seq,
         5_200,
         Event::OpFinished {
             outcome: OpOutcome::Failed {
@@ -347,16 +376,28 @@ fn fetching_view(op_id: &str) -> OpView {
 }
 
 fn style(animate: bool) -> forge::ForgeStyle {
+    style_elapsed(animate, None)
+}
+
+fn style_elapsed(animate: bool, elapsed_ms: Option<u64>) -> forge::ForgeStyle {
     forge::ForgeStyle {
         accent: Color32::from_rgb(90, 180, 255),
         animate,
         expected_ms: Some(11 * 60_000),
         title: "Survival".to_owned(),
-        elapsed_ms: None,
+        elapsed_ms,
     }
 }
 
-/// Build a harness for `view`/`style`, step it a few times (so placement/flash/arc animations
+/// The harness wraps the UI in an 8px frame. Draw over the whole window.
+fn full_bleed(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
+    let full = ui.ctx().content_rect();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(full));
+    child.set_clip_rect(full);
+    f(&mut child);
+}
+
+/// Build a harness for `view`/`style`, step it a few times (so the drop and flash
 /// settle into a representative frame), render it and save the PNG under
 /// `target/forge-shots/<name>.png`. Panics (failing the test) if anything in the pipeline fails.
 /// `times` are `ctx` seconds set explicitly before each step (via `RawInput::time`), so the
@@ -366,11 +407,18 @@ fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/forge-shots");
     std::fs::create_dir_all(dir).expect("create target/forge-shots");
 
+    let animate = style.animate;
     let mut harness = egui_kittest::Harness::builder()
         .with_size(size)
+        .with_accessibility_check(false)
         .wgpu()
         .build_ui(move |ui| {
-            forge::forge(ui, &view, &style);
+            full_bleed(ui, |ui| {
+                gui::theme::apply(ui.ctx(), true, animate);
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0, gui::theme::BG_SURFACE);
+                forge::forge(ui, &view, &style);
+            });
         });
     for &t in times {
         harness.input_mut().time = Some(t);
@@ -384,8 +432,13 @@ fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2
 }
 
 /// A handful of steps spanning ~1.5 simulated seconds: enough rotation for the cube to read
-/// clearly as 3D without landing on an axis-aligned angle.
+/// clearly as 3D without landing on an axis-aligned angle. The drop and flash have settled.
 const STEPS: &[f64] = &[0.0, 0.3, 0.6, 0.9, 1.2, 1.5];
+
+/// Content area at 1280×800 (sidebar and header already taken).
+const CONTENT: egui::Vec2 = egui::vec2(980.0, 600.0);
+/// Content area at the 900×600 minimum.
+const CONTENT_NARROW: egui::Vec2 = egui::vec2(590.0, 400.0);
 
 #[test]
 fn compile_about_45_percent() {
@@ -393,8 +446,8 @@ fn compile_about_45_percent() {
     snapshot(
         "compile_45pct",
         view,
-        style(true),
-        egui::vec2(1100.0, 760.0),
+        style_elapsed(true, Some(4 * 60_000 + 12_000)),
+        CONTENT,
         STEPS,
     );
 }
@@ -402,45 +455,40 @@ fn compile_about_45_percent() {
 #[test]
 fn link_phase() {
     let view = linking_view("snap-link");
-    snapshot("link", view, style(true), egui::vec2(1100.0, 760.0), STEPS);
+    snapshot(
+        "link",
+        view,
+        style_elapsed(true, Some(8 * 60_000)),
+        CONTENT,
+        STEPS,
+    );
 }
 
 #[test]
 fn finished_ok() {
     // The finish burst starts on the first frame the Ok outcome is seen (t=0.0 here); render a
-    // second frame 250ms later so the spark burst and shockwave ring are caught mid-flight.
+    // second frame 250ms later so the spark burst is caught mid-flight.
     let view = finished_ok_view("snap-ok");
-    snapshot(
-        "finished_ok",
-        view,
-        style(true),
-        egui::vec2(1100.0, 760.0),
-        &[0.0, 0.25],
-    );
+    snapshot("finished_ok", view, style(true), CONTENT, &[0.0, 0.25]);
+}
+
+#[test]
+fn finished_hold() {
+    // Past the 0.8s burst the cube holds in Volt.
+    let view = finished_ok_view("snap-hold");
+    snapshot("finished_hold", view, style(true), CONTENT, &[0.0, 1.2]);
 }
 
 #[test]
 fn failed_with_recovery() {
     let view = failed_view("snap-failed");
-    snapshot(
-        "failed_recovery",
-        view,
-        style(true),
-        egui::vec2(1100.0, 760.0),
-        STEPS,
-    );
+    snapshot("failed_recovery", view, style(true), CONTENT, STEPS);
 }
 
 #[test]
 fn fetch_indeterminate() {
     let view = fetching_view("snap-fetch");
-    snapshot(
-        "fetch_indeterminate",
-        view,
-        style(true),
-        egui::vec2(1100.0, 760.0),
-        STEPS,
-    );
+    snapshot("fetch_indeterminate", view, style(true), CONTENT, STEPS);
 }
 
 #[test]
@@ -449,8 +497,8 @@ fn animation_off_is_static() {
     snapshot(
         "animate_off",
         view,
-        style(false),
-        egui::vec2(1100.0, 760.0),
+        style_elapsed(false, Some(4 * 60_000 + 12_000)),
+        CONTENT,
         &[0.0, 0.3],
     );
 }
@@ -459,12 +507,18 @@ fn animation_off_is_static() {
 fn small_size() {
     let view = compiling_view("snap-small", 196, 437);
     snapshot(
-        "small_560x420",
+        "small_590x400",
         view,
-        style(true),
-        egui::vec2(560.0, 420.0),
+        style_elapsed(true, Some(4 * 60_000 + 12_000)),
+        CONTENT_NARROW,
         STEPS,
     );
+}
+
+#[test]
+fn failed_narrow() {
+    let view = failed_view("snap-failed-narrow");
+    snapshot("failed_590x400", view, style(true), CONTENT_NARROW, STEPS);
 }
 
 /// `cube_icon` at the sizes it's actually called at around the app (sidebar row icons at 20,
@@ -479,12 +533,16 @@ fn cube_icon_sizes() {
     let accent = Color32::from_rgb(230, 170, 70);
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(420.0, 100.0))
+        .with_accessibility_check(false)
         .wgpu()
         .build_ui(move |ui| {
+            gui::theme::apply(ui.ctx(), true, false);
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, gui::theme::BG_SURFACE);
             ui.horizontal_centered(|ui| {
                 ui.add_space(16.0);
                 for &size in &sizes {
-                    forge::cube_icon(ui, size, accent, false);
+                    forge::cube_icon(ui, size, accent, true);
                     ui.add_space(16.0);
                 }
             });

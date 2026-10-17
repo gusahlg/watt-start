@@ -1,11 +1,16 @@
-//! A standalone window that drives [`forge::forge`] through a scripted Build (success), a
+//! A standalone window that drives the forge through a scripted Build (success), a
 //! Failed run (with recovery options) and a Cancelled run, looping forever. Useful for eyeballing
 //! the animation without running a real build.
 //!
 //! Run with `cargo run -p watt-start --example forge_demo`.
 
-#[path = "../src/gui/forge.rs"]
-mod forge;
+// The demo only drives the forge; the rest of the included GUI tree is unused here.
+#![allow(dead_code)]
+
+#[path = "../src/gui/mod.rs"]
+mod gui;
+
+use gui::forge;
 
 use egui::Color32;
 use watt_core::events::{
@@ -463,6 +468,7 @@ impl Demo {
             self.view.apply(&self.script[self.applied]);
             self.applied += 1;
         }
+        self.style.elapsed_ms = Some(elapsed_ms);
         if !self.view.running() && self.finished_at.is_none() {
             self.finished_at = Some(now);
         }
@@ -471,6 +477,7 @@ impl Demo {
         {
             self.scenario = (self.scenario + 1) % self.scripts.len();
             self.start_scenario(now);
+            self.style.elapsed_ms = Some(0);
         }
     }
 }
@@ -479,7 +486,7 @@ fn main() -> eframe::Result {
     let icon = forge::app_icon_rgba(64);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(egui::vec2(900.0, 760.0))
+            .with_inner_size(egui::vec2(980.0, 700.0))
             .with_icon(egui::IconData {
                 rgba: icon,
                 width: 64,
@@ -493,14 +500,20 @@ fn main() -> eframe::Result {
         let now = ui.ctx().input(|i| i.time);
         let demo = demo.get_or_insert_with(|| Demo::new(now));
         demo.tick(now);
+        gui::theme::apply(ui.ctx(), true, demo.style.animate);
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 forge::cube_icon(ui, 22.0, demo.style.accent, demo.view.running());
-                ui.label("Forge demo: cycling success / failed / cancelled runs");
+                ui.label(
+                    egui::RichText::new("Forge demo: cycling success / failed / cancelled runs")
+                        .font(gui::theme::regular(14.0))
+                        .color(gui::theme::TEXT),
+                );
             });
-            ui.separator();
+            ui.add_space(8.0);
             let _ = forge::forge(ui, &demo.view, &demo.style);
         });
+        // The script keeps playing after the forge itself has settled and stopped asking.
         ui.ctx().request_repaint();
     })
 }
