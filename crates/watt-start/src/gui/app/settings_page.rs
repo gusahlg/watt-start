@@ -168,12 +168,29 @@ fn appearance_card(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings) -> 
         .changed();
         changed |= setting_row(ui, "Scale", "", 210.0, |ui| {
             ui.spacing_mut().slider_width = 150.0;
-            ui.add(
-                egui::Slider::new(&mut s.appearance.scale, 0.75..=1.75)
+            // Applying zoom on every drag step moves the pointer in points and the slider
+            // oscillates. Hold the value until the drag ends (or a keyboard nudge lands).
+            let id = ui.scope_id().with("pending-scale");
+            let mut pending = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(id))
+                .unwrap_or(s.appearance.scale);
+            let response = ui.add(
+                egui::Slider::new(&mut pending, 0.75..=1.75)
                     .step_by(0.05)
                     .fixed_decimals(2),
-            )
-            .changed()
+            );
+            let commit = response.drag_stopped() || (response.changed() && !response.dragged());
+            if commit {
+                ui.ctx().data_mut(|d| d.remove::<f32>(id));
+                s.appearance.scale = pending;
+                true
+            } else if response.dragged() {
+                ui.ctx().data_mut(|d| d.insert_temp(id, pending));
+                false
+            } else {
+                false
+            }
         });
     });
     changed
@@ -220,8 +237,14 @@ fn advanced_card(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings) -> bo
             "New instances follow this branch.",
             200.0,
             |ui| {
-                widgets::text_input(ui, &mut s.default_channel, "main", ui.available_width())
-                    .changed()
+                widgets::text_input_with_id(
+                    ui,
+                    "default-channel",
+                    &mut s.default_channel,
+                    "main",
+                    ui.available_width(),
+                )
+                .changed()
             },
         );
         let p = theme::palette(ui.ctx());
@@ -280,7 +303,14 @@ fn advanced_card(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings) -> bo
 fn remote_row(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings, repo: Repo) -> bool {
     let mut value = s.remotes.get(&repo).cloned().unwrap_or_default();
     let edited = setting_row(ui, repo.label(), "", 240.0, |ui| {
-        widgets::text_input(ui, &mut value, "Public GitHub", ui.available_width()).changed()
+        widgets::text_input_with_id(
+            ui,
+            ("remote", repo.label()),
+            &mut value,
+            "Public GitHub",
+            ui.available_width(),
+        )
+        .changed()
     });
     if !edited {
         return false;
@@ -302,7 +332,15 @@ fn extra_repositories(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings) 
             let row_w = ui.available_width();
             let mut text = path.display().to_string();
             let input_w = (row_w - 36.0).max(80.0);
-            if widgets::text_input(ui, &mut text, "Repository path", input_w).changed() {
+            if widgets::text_input_with_id(
+                ui,
+                ("extra-repo", i),
+                &mut text,
+                "Repository path",
+                input_w,
+            )
+            .changed()
+            {
                 *path = PathBuf::from(text);
                 changed = true;
             }

@@ -174,6 +174,48 @@ impl<'a> Button<'a> {
         self
     }
 
+    /// Outer width [`Self::paint`] will allocate, including padding and [`Self::min_width`].
+    ///
+    /// Callers use this to decide whether a row of buttons fits before placing them.
+    pub fn outer_width(&self, ui: &Ui) -> f32 {
+        (self.content_width(ui) + self.size.pad_x() * 2.0).max(self.min_width)
+    }
+
+    fn content_width(&self, ui: &Ui) -> f32 {
+        let text_w = if self.text.is_empty() {
+            0.0
+        } else {
+            ui.painter()
+                .layout_no_wrap(
+                    self.text.to_owned(),
+                    theme::semibold(14.0),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+        };
+        let icon_px = self.size.icon();
+        let has_icon = self.icon.is_some();
+        let badge_w = self
+            .badge
+            .map(|count| badge_width(ui, count))
+            .unwrap_or(0.0);
+        let gap = 8.0;
+        let mut content_w = text_w;
+        if has_icon {
+            content_w += icon_px;
+            if text_w > 0.0 || badge_w > 0.0 {
+                content_w += gap;
+            }
+        }
+        if badge_w > 0.0 && (text_w > 0.0 || has_icon) {
+            content_w += gap + badge_w;
+        } else {
+            content_w += badge_w;
+        }
+        content_w
+    }
+
     /// Allocate, paint, and apply [`.enabled`](Self::enabled) plus the disabled tooltip.
     pub fn show(self, ui: &mut Ui) -> Response {
         let tip = self.disabled_hover;
@@ -199,25 +241,13 @@ impl<'a> Button<'a> {
         };
         let text_w = galley.as_ref().map(|g| g.size().x).unwrap_or(0.0);
         let icon_px = self.size.icon();
-        let has_icon = self.icon.is_some();
         let badge_w = self
             .badge
             .map(|count| badge_width(ui, count))
             .unwrap_or(0.0);
         let gap = 8.0;
-        let mut content_w = text_w;
-        if has_icon {
-            content_w += icon_px;
-            if text_w > 0.0 || badge_w > 0.0 {
-                content_w += gap;
-            }
-        }
-        if badge_w > 0.0 && (text_w > 0.0 || has_icon) {
-            content_w += gap + badge_w;
-        } else {
-            content_w += badge_w;
-        }
-        let width = (content_w + self.size.pad_x() * 2.0).max(self.min_width);
+        let content_w = self.content_width(ui);
+        let width = self.outer_width(ui);
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, self.size.height()), Sense::click());
         let fg = paint_chrome(
@@ -509,7 +539,8 @@ pub fn status_pill(ui: &mut Ui, text: &str, color: Color32, pulsing: bool) -> Re
         let phase = (t * std::f32::consts::TAU / 1.6).sin();
         let wobble = 0.55 + 0.45 * (0.5 + 0.5 * phase);
         dot = color.gamma_multiply(wobble);
-        ui.ctx().request_repaint();
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(80));
     }
     ui.painter()
         .circle_filled(pos2(rect.left() + 12.0, rect.center().y), 3.0, dot);
@@ -705,6 +736,10 @@ fn choice_card_impl(
             .sense(Sense::click())
             .id_salt((title, "choice")),
         |ui| {
+            // Labels registered after the card's click sense would start a text selection
+            // instead of selecting the card. The extra row is a frame so its fields see the
+            // inset width (a bare `add_space` does not shrink `available_width`).
+            ui.style_mut().interaction.selectable_labels = false;
             let bg = ui.painter().add(Shape::Noop);
             let width = ui.available_width();
             ui.set_min_width(width);
@@ -728,25 +763,40 @@ fn choice_card_impl(
                 });
                 ui.add_space(12.0);
             });
+            let mut extra_rect = None;
             if selected && let Some(extra) = extra {
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    extra(ui);
-                    ui.add_space(12.0);
-                });
+                let shown = egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(12, 0))
+                    .show(ui, |ui| extra(ui));
+                extra_rect = Some(shown.response.rect);
             }
             ui.add_space(10.0);
             let rect = ui.min_rect();
-            let fill = if selected {
-                theme::with_alpha(p.volt, 15)
+            // Labels sit on top of the card sense, so `response.hovered()` is false over the
+            // title. The pointer position is the source of hover and press.
+            let pointer_over = ui.rect_contains_pointer(rect);
+            let over_extra = extra_rect.is_some_and(|r| ui.rect_contains_pointer(r));
+            let enabled = ui.is_enabled();
+            let hot = enabled && pointer_over && !over_extra;
+            let pressed = hot && ui.input(|i| i.pointer.primary_down());
+            let hover_t = anim_flag(ui, ui.scope_id().with("hover"), hot && !pressed);
+            let press_t = anim_flag(ui, ui.scope_id().with("press"), pressed);
+            let (fill, stroke) = if selected {
+                let rest = theme::with_alpha(p.volt, 15);
+                let raised = theme::with_alpha(p.volt, 28);
+                let down = theme::with_alpha(p.volt, 40);
+                let fill = lerp_color(lerp_color(rest, raised, hover_t), down, press_t);
+                let color = lerp_color(p.volt, p.volt_hover, hover_t.max(press_t));
+                (fill, Stroke::new(1.5, color))
             } else {
-                p.bg_card
-            };
-            let stroke = if selected {
-                Stroke::new(1.5, p.volt)
-            } else {
-                Stroke::new(1.0, p.line)
+                let fill = lerp_color(
+                    lerp_color(p.bg_card, p.bg_raised, hover_t),
+                    p.pressed_fill,
+                    press_t,
+                );
+                let color = lerp_color(p.line, p.line_strong, hover_t.max(press_t));
+                (fill, Stroke::new(1.0, color))
             };
             ui.painter().set(
                 bg,
@@ -758,6 +808,9 @@ fn choice_card_impl(
                     StrokeKind::Inside,
                 )),
             );
+            if hot {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
         },
     );
     hand(inner.response)
@@ -794,12 +847,36 @@ pub fn swatch(ui: &mut Ui, color: Color32, selected: bool) -> Response {
 /// `width` is the outer width. A non-finite width uses the available width.
 /// The focus stroke stays 1px (the spec's 1.5px would shift the text when the stroke grows).
 pub fn text_input(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
-    input_field(ui, text, hint, width, false)
+    input_field(ui, text, hint, width, false, None)
+}
+
+/// [`text_input`] whose id is `ui.scope_id().with(id_salt)`, so undo history does not leak across rows.
+pub fn text_input_with_id(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+) -> Response {
+    let id = ui.scope_id().with(id_salt);
+    input_field(ui, text, hint, width, false, Some(id))
 }
 
 /// [`text_input`] with a painted magnifier and extra left padding.
 pub fn search_input(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
-    input_field(ui, text, hint, width, true)
+    input_field(ui, text, hint, width, true, None)
+}
+
+/// [`search_input`] with a stable id. See [`text_input_with_id`].
+pub fn search_input_with_id(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+) -> Response {
+    let id = ui.scope_id().with(id_salt);
+    input_field(ui, text, hint, width, true, Some(id))
 }
 
 /// Underline tabs.
@@ -1012,7 +1089,8 @@ pub fn spinner(ui: &mut Ui, size: f32, color: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let spinning = theme::anim_secs(ui.ctx(), 1.0) > 0.0;
     let time = if spinning {
-        ui.ctx().request_repaint();
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
         ui.input(|i| i.time) as f32
     } else {
         0.15
@@ -1300,7 +1378,14 @@ fn icon_strip(ui: &mut Ui, px: f32) {
     });
 }
 
-fn input_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, search: bool) -> Response {
+fn input_field(
+    ui: &mut Ui,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+    search: bool,
+    id: Option<egui::Id>,
+) -> Response {
     undo_disabled_fade(ui);
     let p = theme::palette(ui.ctx());
     let width = if width.is_finite() {
@@ -1311,8 +1396,14 @@ fn input_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, search: b
     let response = ui
         .scope(|ui| {
             ui.visuals_mut().weak_text_color = Some(p.text_faint);
-            let id = ui.next_auto_id();
-            ui.skip_ahead_auto_ids(1);
+            let id = match id {
+                Some(id) => id,
+                None => {
+                    let id = ui.next_auto_id();
+                    ui.skip_ahead_auto_ids(1);
+                    id
+                }
+            };
             let focused = ui.memory(|mem| mem.has_focus(id));
             let predicted = Rect::from_min_size(ui.cursor().min, vec2(width, 32.0));
             let hovered = ui
