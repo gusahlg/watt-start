@@ -83,16 +83,32 @@ seconds for the leader to exit. Build ops map `build_nice` onto a priority class
 below normal, 10 and above idle) as a creation flag, so cargo and rustc inherit it; Play stays
 normal. `watt-start build` from a terminal applies the same mapping with `SetPriorityClass`.
 
-The Windows stderr capture is a pipe: `SetStdHandle(STD_ERROR_HANDLE)` plus `_open_osfhandle` /
-`_dup2` onto CRT fd 2, so in-process writes and child processes inherit it. Stdout stays the JSON
-protocol. Those CRT symbols are provided by both the MSVC CRT and MinGW; `cargo check` does not
-link them.
+The Windows stderr capture is a pipe. CRT fd 2 is pointed at a duplicate of its write end
+(`_open_osfhandle` + `_dup2`) first, and `SetStdHandle(STD_ERROR_HANDLE)` installs the write end
+itself last, because some CRTs rewrite the standard-handle slot inside `_dup2`. Drop restores
+both from duplicates taken up front (`_dup2` closes the handle the slot originally shared with
+fd 2). Stdout stays the JSON protocol. Those CRT symbols are provided by both the UCRT and
+MinGW's CRT; `cargo check` does not link them.
+
+Handle inheritance on Windows: `std::process::Command` passes a child its standard handles as
+fresh inheritable duplicates and calls `CreateProcess` with `bInheritHandles`, which also copies
+every other inheritable handle. So the op clears the inherit bit on its own standard handles at
+startup and creates the capture pipe non-inheritable; otherwise the detached game would hold the
+GUI's stdout/stderr pipes open (and the GUI would see Play as running) until the game exits.
 
 A release build is a Windows GUI-subsystem binary (`windows_subsystem = "windows"`), so opening the
 launcher from Explorer does not create a console. CLI subcommands call `AttachConsole(ATTACH_PARENT_PROCESS)`
-before anything prints, unless stdout is already a handle — the op child is spawned with a piped
-stdout, and attaching would replace the JSON protocol. Every `Command` watt-core itself spawns
-(git, cargo probes, the op child) gets `CREATE_NO_WINDOW` from `process::command`.
+before anything prints when stdout or stderr has no handle, and give only the empty slots a
+`CONOUT$` handle: the op child (piped stdout, the JSON protocol) and redirects are left alone.
+Shells do not wait for a GUI-subsystem program, so the prompt comes back before the output;
+`start /wait` (cmd.exe), piping (`| Out-Host` in PowerShell) or a debug build (console subsystem)
+avoid that. Every
+`Command` watt-core itself spawns (git, the doctor's probes, the op child) gets
+`CREATE_NO_WINDOW` from `process::command`. That flag matters most in release builds: the op
+is then a GUI-subsystem process without a console, and Windows gives every console program it
+starts without `CREATE_NO_WINDOW` a console window of its own. pwc's builder spawns `cargo` and
+`rustc` itself, so it needs the same flag on Windows (a pwc-package-manager change); until it has
+it, a release build shows a console window per Cargo run.
 
 The game and its lock guard are started with `CREATE_BREAKAWAY_FROM_JOB`. If the launcher was
 itself placed in a job that disallows breakaway, that create fails; Windows 8 and later nest jobs,
@@ -130,9 +146,11 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   travel that way, so Play starts the game with `CREATE_BREAKAWAY_FROM_JOB` and then a small
   guard, `watt-start op game-guard --pid <pid> --lock <path>`, with
   `CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS | CREATE_NO_WINDOW`. The guard opens the game
-  process (`OpenProcess(SYNCHRONIZE)`, so a reused pid cannot be confused with it), takes the
-  exclusive lock, writes `ok` to stdout, and blocks on `WaitForSingleObject`. Play waits up to
-  15 seconds for that line; anything else, or a timeout, kills the game and the guard. When the
+  process (`OpenProcess(SYNCHRONIZE)`; the op keeps its own handle to the game until the guard
+  answers, so the pid cannot have been reused), takes the exclusive lock, writes `ok` to stdout,
+  and blocks on `WaitForSingleObject`. Play waits up to 15 seconds for that line; anything else,
+  or a timeout, kills the game and the guard. The game is started before the guard locks; the
+  instance's `op.lock`, held by the Play op throughout, keeps a second Play out of that gap. When the
   game exits the guard exits and the lock goes with it. `status::compute`, `Play` and `Remove`
   (and the world-copying parts of `Update` and `Duplicate`) treat this lock, not
   `watt-start/game.toml` (which only records the pid/log/started for display), as the truth that
@@ -194,8 +212,10 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   that disallows breakaway makes `CREATE_BREAKAWAY_FROM_JOB` fail); the guard's `ok` on the stdout
   pipe; stderr capture via `_open_osfhandle` / `_dup2` on both CRTs (check does not link them);
   `AttachConsole` for `watt-start list` from cmd.exe; priority-class inheritance into cargo; and
-  `\\?\` paths already stored in `pwc.lock`. Still Unix-only, and not attempted here: copying a
-  directory with open files (an AV lock on a world), case-insensitive duplicate instance names,
-  `PATHEXT`, ACL-aware read-only cleanup beyond the read-only attribute, Ctrl-C / Ctrl-Break as a
-  soft cancel, and the client tests (they are shell scripts and `/proc` checks).
+  `\\?\` paths already stored in `pwc.lock`. The two Play integration tests are ignored on Windows
+  (the guard is `watt-start op game-guard`, and a watt-core test binary is not watt-start). Not
+  attempted yet: copying a directory with open files (an AV lock on a world), case-insensitive
+  duplicate instance names, `PATHEXT`, ACL-aware read-only cleanup beyond the read-only attribute,
+  Ctrl-C / Ctrl-Break as a soft cancel, a real Vulkan device check (the doctor only loads
+  `vulkan-1.dll`), and Windows client tests (today's are shell scripts and `/proc` checks).
 

@@ -44,7 +44,10 @@ and rustup (`winget install Rustlang.Rustup`) with the MSVC toolchain, plus the 
 Build Tools workload "Desktop development with C++" (the linker and Windows SDK `rustc` uses).
 The GNU toolchain (`stable-x86_64-pc-windows-gnu`) also type-checks. The game needs a GPU driver
 that provides `vulkan-1.dll`; the launcher window itself uses DirectX 12 when it is available.
-Build with `cargo build --release` from a terminal. There is no installer yet.
+Build with `cargo build --release` from a terminal. There is no installer yet. A release build is
+a GUI program, so the shell does not wait for CLI commands such as `watt-start list` and the
+prompt comes back before their output; use `start /wait watt-start list` in cmd.exe or
+`watt-start list | Out-Host` in PowerShell.
 
 The first build of an instance compiles the whole game and takes 15–40 minutes. Later builds
 reuse everything that did not change, and instances on the same game version share their builds.
