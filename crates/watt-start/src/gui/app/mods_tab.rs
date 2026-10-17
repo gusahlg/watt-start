@@ -477,17 +477,19 @@ impl App {
         let name = entry.card.name.clone();
         let has_packages = !entry.card.packages.is_empty();
         let catalog = Catalog::from_loaded(self.backend.available_mods(&name));
+        // Moved out and back in, not cloned: the view holds the expansion sets.
         let mut view = self
             .mods_ui
             .views
-            .entry(name.clone())
-            .or_insert_with(|| InstanceModsUi::fresh(has_packages))
-            .clone();
-        let staged = self.staged_mods.get(&name).cloned().unwrap_or_default();
+            .remove(&name)
+            .unwrap_or_else(|| InstanceModsUi::fresh(has_packages));
+        let empty = StagedMods::default();
+        let staged = self.staged_mods.get(&name).unwrap_or(&empty);
         let rebuild = self.settings_draft.rebuild_after_mod_change;
         let busy = self.busy(&name) || entry.status.busy;
         let wait = wait_reason(self, &name, entry.status.busy);
         let hint = rebuild_hint(rebuild, last_build_ms(entry));
+        let modal = self.modal_open();
 
         let click = ui
             .push_id(&name, |ui| {
@@ -495,7 +497,7 @@ impl App {
                 let narrow = ui.available_width() < DETAILS_BREAK;
                 handle_mods_keys(
                     ui,
-                    self.modal_open(),
+                    modal,
                     narrow,
                     &name,
                     &mut view,
@@ -506,7 +508,7 @@ impl App {
                     ui,
                     &mut view,
                     entry,
-                    &staged,
+                    staged,
                     &catalog,
                     &BarOpts {
                         hint: &hint,
