@@ -18,6 +18,37 @@ impl App {
         });
     }
 
+    /// Offer to duplicate `instance`.
+    ///
+    /// Placeholder: starts the copy right away under a free `<name>-copy` name and shows it. The
+    /// Duplicate dialog (title, directory name, "Copy worlds") replaces this.
+    pub(crate) fn open_duplicate_dialog(&mut self, instance: &str) {
+        let taken: Vec<String> = self
+            .backend
+            .instances()
+            .iter()
+            .map(|e| e.card.name.clone())
+            .chain(self.ops.keys().cloned())
+            .collect();
+        let mut new_name = format!("{instance}-copy");
+        let mut n = 2;
+        while taken.contains(&new_name) {
+            new_name = format!("{instance}-copy-{n}");
+            n += 1;
+        }
+        if self.start_op(
+            new_name.clone(),
+            OpRequest::Duplicate {
+                instance: instance.to_owned(),
+                new_name: new_name.clone(),
+                display_name: None,
+                with_worlds: false,
+            },
+        ) {
+            self.main_view = Some(MainView::Instance(new_name));
+        }
+    }
+
     pub(crate) fn ask_maintenance(&mut self, title: &str, body: &str, request: OpRequest) {
         self.confirm = Some(Confirm {
             title: title.to_owned(),

@@ -79,6 +79,10 @@ impl App {
             animate: self.settings_draft.appearance.animations,
             expected_ms,
             title: entry.card.meta.title(name).to_owned(),
+            elapsed_ms: self
+                .ops
+                .get(name)
+                .map(|s| s.started.elapsed().as_millis() as u64),
         };
         let view = self
             .ops
@@ -231,16 +235,7 @@ impl App {
 
             ui.menu_button("...", |ui| {
                 if ui.button("Duplicate…").clicked() {
-                    let new_name = format!("{name}-copy");
-                    self.start_op(
-                        new_name.clone(),
-                        OpRequest::Duplicate {
-                            instance: name.clone(),
-                            new_name,
-                            display_name: None,
-                            with_worlds: false,
-                        },
-                    );
+                    self.open_duplicate_dialog(&name);
                     ui.close();
                 }
                 if ui.button("Change source…").clicked() {

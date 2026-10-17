@@ -432,8 +432,10 @@ impl App {
     fn main_area(&mut self, ui: &mut egui::Ui) {
         match self.main_view.clone() {
             Some(MainView::Settings) => self.settings_page(ui),
+            // An instance being created or duplicated has an op but no catalog entry yet.
             Some(MainView::Instance(name))
-                if self.backend.instances().iter().any(|e| e.card.name == name) =>
+                if self.backend.instances().iter().any(|e| e.card.name == name)
+                    || self.ops.contains_key(&name) =>
             {
                 self.instance_page(ui, &name);
             }

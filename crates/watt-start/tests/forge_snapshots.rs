@@ -352,6 +352,7 @@ fn style(animate: bool) -> forge::ForgeStyle {
         animate,
         expected_ms: Some(11 * 60_000),
         title: "Survival".to_owned(),
+        elapsed_ms: None,
     }
 }
 

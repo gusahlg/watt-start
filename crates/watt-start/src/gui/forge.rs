@@ -21,6 +21,9 @@ pub struct ForgeStyle {
     pub expected_ms: Option<u64>,
     /// The instance's shown name.
     pub title: String,
+    /// Milliseconds since the op started, from the GUI's own clock (`view.t_ms` only moves when
+    /// an event arrives, so it stalls during a quiet link). `None`: use `view.t_ms`.
+    pub elapsed_ms: Option<u64>,
 }
 
 /// What the user pressed in the forge this frame.
