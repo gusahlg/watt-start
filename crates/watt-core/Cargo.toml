@@ -17,11 +17,15 @@ pwc-package.workspace = true
 pwc-store.workspace = true
 anyhow.workspace = true
 libc.workspace = true
+minisign-verify = "0.3"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 toml.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 
 [dev-dependencies]
+minisign = "0.10"
 tempfile.workspace = true
 
 [lints]
