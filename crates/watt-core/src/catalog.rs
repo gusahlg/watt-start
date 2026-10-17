@@ -112,16 +112,66 @@ fn instance_names(paths: &Paths) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// What pwc's config says is the active instance, read once per scan.
+enum ActiveLookup {
+    /// `config.toml` loaded. `None` means no instance is active.
+    Name(Option<String>),
+    /// `config.toml` could not be read. The message is attached to every card.
+    Failed(String),
+}
+
+fn read_active(paths: &Paths) -> ActiveLookup {
+    match binding::pwc_config(paths) {
+        Ok(config) => ActiveLookup::Name(config.active_instance),
+        Err(e) => ActiveLookup::Failed(format!("cannot read pwc's config.toml: {e}")),
+    }
+}
+
+fn open_store(paths: &Paths) -> Result<Store> {
+    let store_dir = paths.pwc.store();
+    Store::open(&store_dir)
+        .with_context(|| format!("cannot open the store at {}", store_dir.display()))
+}
+
+/// An instance directory that did not load: `(name, reason)`.
+pub type LoadError = (String, String);
+
+/// Every instance in one pass: cards that loaded, and `(name, reason)` for the ones that did not.
+///
+/// Parses pwc's `config.toml` once and opens the package store once. [`list_instances`] and
+/// [`list_errors`] are this scan with one half dropped; front ends that need both should call
+/// this so a refresh does not walk the catalog twice.
+pub fn scan_instances(paths: &Paths) -> Result<(Vec<InstanceCard>, Vec<LoadError>)> {
+    let names = instance_names(paths)?;
+    let active = read_active(paths);
+    let store = match open_store(paths) {
+        Ok(store) => store,
+        Err(e) => {
+            let reason = format!("{e:#}");
+            let errors = names
+                .into_iter()
+                .map(|name| (name, reason.clone()))
+                .collect();
+            return Ok((Vec::new(), errors));
+        }
+    };
+    let mut cards = Vec::new();
+    let mut errors = Vec::new();
+    for name in names {
+        match load_instance_with(paths, &name, &active, &store) {
+            Ok(card) => cards.push(card),
+            Err(e) => errors.push((name, format!("{e:#}"))),
+        }
+    }
+    cards.sort_by_key(sort_key);
+    Ok((cards, errors))
+}
+
 /// Every instance, sorted: favourites first, then by group, then by title. Instances whose
 /// `instance.toml` cannot be read are skipped with a problem entry on no card; use
 /// [`list_errors`] to show them.
 pub fn list_instances(paths: &Paths) -> Result<Vec<InstanceCard>> {
-    let mut cards: Vec<InstanceCard> = instance_names(paths)?
-        .into_iter()
-        .filter_map(|name| load_instance(paths, &name).ok())
-        .collect();
-    cards.sort_by_key(sort_key);
-    Ok(cards)
+    Ok(scan_instances(paths)?.0)
 }
 
 /// `(favourite-first, group, title)`.
@@ -135,20 +185,24 @@ fn sort_key(card: &InstanceCard) -> (bool, String, String) {
 
 /// Instance directories that could not be loaded, with the reason.
 pub fn list_errors(paths: &Paths) -> Vec<(String, String)> {
-    let Ok(names) = instance_names(paths) else {
-        return Vec::new();
-    };
-    names
-        .into_iter()
-        .filter_map(|name| match load_instance(paths, &name) {
-            Ok(_) => None,
-            Err(e) => Some((name, format!("{e:#}"))),
-        })
-        .collect()
+    scan_instances(paths)
+        .map(|(_, errors)| errors)
+        .unwrap_or_default()
 }
 
 /// One instance by name.
 pub fn load_instance(paths: &Paths, name: &str) -> Result<InstanceCard> {
+    let active = read_active(paths);
+    let store = open_store(paths)?;
+    load_instance_with(paths, name, &active, &store)
+}
+
+fn load_instance_with(
+    paths: &Paths,
+    name: &str,
+    active: &ActiveLookup,
+    store: &Store,
+) -> Result<InstanceCard> {
     let instance_name = pwc_manifest::InstanceName::parse(name)
         .with_context(|| format!("invalid instance name `{name}`"))?;
     let instance = pwc_instance::Instance::open(&paths.pwc, &instance_name)
@@ -164,10 +218,6 @@ pub fn load_instance(paths: &Paths, name: &str) -> Result<InstanceCard> {
             None
         }
     };
-
-    let store_dir = paths.pwc.store();
-    let store = Store::open(&store_dir)
-        .with_context(|| format!("cannot open the store at {}", store_dir.display()))?;
 
     let mut packages = Vec::new();
     if let Some(lock) = &lock {
@@ -232,10 +282,10 @@ pub fn load_instance(paths: &Paths, name: &str) -> Result<InstanceCard> {
 
     let game = game_info(&meta, lock.as_ref());
 
-    let active = match binding::pwc_config(paths) {
-        Ok(config) => config.active_instance.as_deref() == Some(name),
-        Err(e) => {
-            problems.push(format!("cannot read pwc's config.toml: {e}"));
+    let is_active = match active {
+        ActiveLookup::Name(current) => current.as_deref() == Some(name),
+        ActiveLookup::Failed(message) => {
+            problems.push(message.clone());
             false
         }
     };
@@ -248,7 +298,7 @@ pub fn load_instance(paths: &Paths, name: &str) -> Result<InstanceCard> {
         lock,
         packages,
         game,
-        active,
+        active: is_active,
         problems,
     })
 }

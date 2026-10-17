@@ -68,9 +68,7 @@ struct RunningGame {
 /// checkout). The running game comes from `watt-start/game.lock`, the truth, with the pid read
 /// from `watt-start/game.toml` for display.
 pub fn compute(paths: &Paths, card: &InstanceCard) -> Result<InstanceStatus> {
-    let instance_paths = InstancePaths::new(&card.dir);
-    let busy = FileLock::is_held(&instance_paths.op_lock());
-    let running = running_pid(&card.dir);
+    let live = liveness(paths, &card.dir);
     let last_good = card.meta.last_good().cloned();
 
     // Only the PWC source and repositories matter for resolving the binding and checking
@@ -93,10 +91,31 @@ pub fn compute(paths: &Paths, card: &InstanceCard) -> Result<InstanceStatus> {
 
     Ok(InstanceStatus {
         readiness,
-        busy,
-        running,
+        busy: live.busy,
+        running: live.running,
         last_good,
     })
+}
+
+/// Whether an instance is busy or has a game running, without resolving its binding.
+///
+/// Two lock probes and, when the game lock is held, a read of `game.toml` for the pid.
+/// `paths` is unused: callers pass the same pair they pass to [`compute`].
+pub struct Liveness {
+    /// An op holds `op.lock`.
+    pub busy: bool,
+    /// The game is running: its pid (`Some(0)` when the lock is held but `game.toml` is unreadable).
+    pub running: Option<u32>,
+}
+
+/// Cheap liveness probe. Does not run git, resolve the binding, or read the catalog.
+pub fn liveness(paths: &Paths, dir: &Path) -> Liveness {
+    let _ = paths;
+    let instance_paths = InstancePaths::new(dir);
+    Liveness {
+        busy: FileLock::is_held(&instance_paths.op_lock()),
+        running: running_pid(dir),
+    }
 }
 
 fn readiness_for_locked(

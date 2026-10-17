@@ -12,13 +12,93 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 
 use crate::events::{Envelope, Event, LogStream, PROTOCOL};
 use crate::ops::OpRequest;
 use crate::view::OpView;
+
+/// Why a reader thread is asking the UI to wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpWake {
+    /// `op-started`, a phase change, an outcome, or the reader exiting.
+    Immediate,
+    /// A log line, progress, a warning, or a state change. Coalesce these.
+    Coalesce,
+}
+
+/// Installed by the UI after the first frame. Absent in tests that poll themselves.
+pub type OpWaker = Arc<dyn Fn(OpWake) + Send + Sync>;
+
+/// How a single event should wake the UI.
+pub fn op_wake(event: &Event) -> OpWake {
+    match event {
+        Event::OpStarted { .. }
+        | Event::PhaseStarted { .. }
+        | Event::PhaseFinished { .. }
+        | Event::OpFinished { .. } => OpWake::Immediate,
+        Event::Log { .. }
+        | Event::Progress { .. }
+        | Event::Warning { .. }
+        | Event::Changed { .. } => OpWake::Coalesce,
+    }
+}
+
+struct WakeGate {
+    waker: Option<OpWaker>,
+    /// When the last coalesce wake was delivered. Further log lines inside the window share it.
+    last_coalesce: Option<Instant>,
+    /// A delayed coalesce is already sleeping, so a burst does not spawn a thread per line.
+    follow_up: bool,
+}
+
+fn poke(gate: &Arc<Mutex<WakeGate>>, kind: OpWake) {
+    let mut guard = gate.lock().unwrap_or_else(|err| err.into_inner());
+    if guard.waker.is_none() {
+        return;
+    }
+    match kind {
+        OpWake::Immediate => {
+            let waker = Arc::clone(guard.waker.as_ref().expect("checked above"));
+            drop(guard);
+            waker(OpWake::Immediate);
+        }
+        OpWake::Coalesce => {
+            let now = Instant::now();
+            let within = guard
+                .last_coalesce
+                .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(100));
+            if within {
+                if !guard.follow_up {
+                    guard.follow_up = true;
+                    let wait = Duration::from_millis(100).saturating_sub(
+                        now.saturating_duration_since(guard.last_coalesce.unwrap_or(now)),
+                    );
+                    let gate = Arc::clone(gate);
+                    drop(guard);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(wait);
+                        let mut guard = gate.lock().unwrap_or_else(|err| err.into_inner());
+                        guard.follow_up = false;
+                        guard.last_coalesce = Some(Instant::now());
+                        let waker = guard.waker.clone();
+                        drop(guard);
+                        if let Some(waker) = waker {
+                            waker(OpWake::Coalesce);
+                        }
+                    });
+                }
+                return;
+            }
+            guard.last_coalesce = Some(now);
+            let waker = Arc::clone(guard.waker.as_ref().expect("checked above"));
+            drop(guard);
+            waker(OpWake::Coalesce);
+        }
+    }
+}
 
 /// How long [`OpHandle::cancel`] waits for a clean exit before escalating to `SIGKILL`.
 const CANCEL_GRACE: Duration = Duration::from_secs(3);
@@ -30,6 +110,8 @@ pub struct OpHandle {
     pgid: i32,
     rx: Receiver<Envelope>,
     cancelled: Arc<AtomicBool>,
+    /// Shared with the reader threads. The UI installs a waker after the first frame.
+    gate: Arc<Mutex<WakeGate>>,
 }
 
 impl OpHandle {
@@ -54,9 +136,15 @@ impl OpHandle {
         // threads so a stray line (stderr, or stdout before/after the protocol) can still be
         // folded into the right op's view instead of resetting it.
         let last_op_id = Arc::new(Mutex::new(String::new()));
+        let gate = Arc::new(Mutex::new(WakeGate {
+            waker: None,
+            last_coalesce: None,
+            follow_up: false,
+        }));
 
         let tx_out = tx.clone();
         let op_id_out = Arc::clone(&last_op_id);
+        let gate_out = Arc::clone(&gate);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let envelope = match serde_json::from_str::<Envelope>(&line) {
@@ -67,19 +155,31 @@ impl OpHandle {
                     }
                     Err(_) => synthetic_log(&op_id_out, line),
                 };
+                let kind = op_wake(&envelope.event);
                 if tx_out.send(envelope).is_err() {
                     break;
                 }
+                poke(&gate_out, kind);
             }
+            // Dropping the sender is what makes `poll` see `Disconnected`. Wake after that
+            // so the UI reaps a child that exited without `op-finished`.
+            drop(tx_out);
+            poke(&gate_out, OpWake::Immediate);
         });
 
         let op_id_err = Arc::clone(&last_op_id);
+        let gate_err = Arc::clone(&gate);
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if tx.send(synthetic_log(&op_id_err, line)).is_err() {
+                let envelope = synthetic_log(&op_id_err, line);
+                let kind = op_wake(&envelope.event);
+                if tx.send(envelope).is_err() {
                     break;
                 }
+                poke(&gate_err, kind);
             }
+            drop(tx);
+            poke(&gate_err, OpWake::Immediate);
         });
 
         let pgid = child.id() as i32;
@@ -88,7 +188,26 @@ impl OpHandle {
             pgid,
             rx,
             cancelled: Arc::new(AtomicBool::new(false)),
+            gate,
         })
+    }
+
+    /// Install (or replace) the UI waker. Reader threads that already exited have nothing to
+    /// wake; [`OpHandle::poll`] still drains whatever they queued.
+    pub fn set_waker(&self, waker: OpWaker) {
+        self.gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .waker = Some(waker);
+    }
+
+    /// Whether [`OpHandle::set_waker`] has been called. Until then the UI has to poll.
+    pub fn has_waker(&self) -> bool {
+        self.gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .waker
+            .is_some()
     }
 
     /// Apply every envelope that arrived to `view`; returns whether anything changed. When the
@@ -99,7 +218,7 @@ impl OpHandle {
         loop {
             match self.rx.try_recv() {
                 Ok(envelope) => {
-                    view.apply(&envelope);
+                    view.apply_owned(envelope);
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,

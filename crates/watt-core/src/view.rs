@@ -64,35 +64,48 @@ pub struct OpView {
 }
 
 impl OpView {
-    /// Fold one envelope in.
+    /// Fold one envelope in. Clones the event; prefer [`OpView::apply_owned`] on a hot stream.
     pub fn apply(&mut self, envelope: &Envelope) {
-        self.op_id.clone_from(&envelope.op_id);
-        self.t_ms = self.t_ms.max(envelope.t_ms);
-        match &envelope.event {
+        self.fold(
+            envelope.op_id.clone(),
+            envelope.t_ms,
+            envelope.event.clone(),
+        );
+    }
+
+    /// Fold an envelope, moving the log line instead of cloning it.
+    pub fn apply_owned(&mut self, envelope: Envelope) {
+        self.fold(envelope.op_id, envelope.t_ms, envelope.event);
+    }
+
+    fn fold(&mut self, op_id: String, t_ms: u64, event: Event) {
+        self.op_id = op_id;
+        self.t_ms = self.t_ms.max(t_ms);
+        match event {
             Event::OpStarted {
                 op,
                 instance,
                 phases,
                 log,
             } => {
-                self.op = Some(*op);
-                self.instance.clone_from(instance);
-                self.log_file.clone_from(log);
+                self.op = Some(op);
+                self.instance = instance;
+                self.log_file = log;
                 self.phases = phases
-                    .iter()
-                    .map(|&phase| PhaseView {
-                        phase,
+                    .into_iter()
+                    .map(|phase| PhaseView {
                         title: phase.title().to_owned(),
+                        phase,
                         state: PhaseState::Pending,
                         duration_ms: 0,
                     })
                     .collect();
             }
             Event::PhaseStarted { phase, title, .. } => {
-                let view = self.phase_mut(*phase);
-                view.title.clone_from(title);
+                let view = self.phase_mut(phase);
+                view.title = title;
                 view.state = PhaseState::Running;
-                self.current = Some(*phase);
+                self.current = Some(phase);
                 self.progress = None;
                 self.detail.clear();
             }
@@ -102,10 +115,10 @@ impl OpView {
                 total,
                 detail,
             } => {
-                if self.current == Some(*phase) {
-                    self.progress = Some((*done, *total));
+                if self.current == Some(phase) {
+                    self.progress = Some((done, total));
                     if !detail.is_empty() {
-                        self.detail.clone_from(detail);
+                        self.detail = detail;
                     }
                 }
             }
@@ -113,31 +126,33 @@ impl OpView {
                 if self.log.len() == LOG_LINES {
                     self.log.pop_front();
                 }
-                self.log.push_back(line.clone());
+                self.log.push_back(line);
             }
-            Event::Warning { message } => self.warnings.push(message.clone()),
-            Event::Changed { change } => self.changes.push(change.clone()),
+            Event::Warning { message } => self.warnings.push(message),
+            Event::Changed { change } => self.changes.push(change),
             Event::PhaseFinished {
                 phase,
                 outcome,
                 duration_ms,
             } => {
-                let view = self.phase_mut(*phase);
-                view.state = PhaseState::Done(*outcome);
-                view.duration_ms = *duration_ms;
-                if self.current == Some(*phase) {
+                let view = self.phase_mut(phase);
+                view.state = PhaseState::Done(outcome);
+                view.duration_ms = duration_ms;
+                if self.current == Some(phase) {
                     self.current = None;
                     self.progress = None;
                 }
             }
             Event::OpFinished { outcome, .. } => {
-                self.outcome = Some(outcome.clone());
+                let failed = !matches!(outcome, OpOutcome::Ok { .. });
+                self.outcome = Some(outcome);
                 self.current = None;
                 for view in &mut self.phases {
                     if view.state == PhaseState::Running {
-                        view.state = PhaseState::Done(match outcome {
-                            OpOutcome::Ok { .. } => PhaseOutcome::Ok,
-                            _ => PhaseOutcome::Failed,
+                        view.state = PhaseState::Done(if failed {
+                            PhaseOutcome::Failed
+                        } else {
+                            PhaseOutcome::Ok
                         });
                     }
                 }
