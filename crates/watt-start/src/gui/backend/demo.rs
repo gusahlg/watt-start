@@ -895,11 +895,11 @@ fn authored(
 }
 
 fn extra_catalog() -> Vec<AvailableMod> {
-    vec![
+    let mut mods = vec![
         authored(
             "pwc.minimap",
             "Minimap",
-            "1.3.0",
+            "1.4.0",
             "mod",
             "A corner map of the chunks around you.",
             &["interface"],
@@ -1031,7 +1031,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
         authored(
             "pwc.backpacks",
             "Backpacks",
-            "1.2.0",
+            "1.2.1",
             "mod",
             "Carry a second inventory on your back.",
             &["gameplay"],
@@ -1157,7 +1157,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "Carves riverbeds and fills them from rainfall.",
             &["worldgen"],
             "field-lab",
-            &[],
+            &["pwc.material-names"],
             &[],
         ),
         authored(
@@ -1193,7 +1193,29 @@ fn extra_catalog() -> Vec<AvailableMod> {
             &[],
             &[],
         ),
-    ]
+        {
+            let mut rail = authored(
+                "pwc.rail-network",
+                "Rail Network",
+                "0.1.0",
+                "mod",
+                "Lay track and haul ore to the surface.",
+                &["gameplay"],
+                "kiln",
+                &[],
+                &[],
+            );
+            rail.pwc_api = Some(">=0.5".into());
+            rail
+        },
+    ];
+    if let Some(minimap) = mods.iter_mut().find(|entry| entry.id == "pwc.minimap") {
+        minimap.versions = vec!["1.4.0".into(), "1.3.0".into()];
+    }
+    if let Some(packs) = mods.iter_mut().find(|entry| entry.id == "pwc.backpacks") {
+        packs.versions = vec!["1.2.1".into(), "1.2.0".into()];
+    }
+    mods
 }
 
 /// The demo backend.
