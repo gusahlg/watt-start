@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result};
 use pwc_manifest::{InstanceManifest, Lockfile, ModKind, PackageId};
@@ -359,7 +358,7 @@ fn git_rev_parse_head(dir: &Path) -> Option<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    let out = crate::process::command("git")
         .arg("-C")
         .arg(dir)
         .args(args)

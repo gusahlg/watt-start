@@ -300,3 +300,110 @@ esac
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     script
 }
+
+/// Windows stand-in for the shell wrapper. pwc looks for `pwc-game.exe` (`exe_name` adds
+/// `.exe`) and `CreateProcess` will not run a `.cmd`, so this compiles a tiny Rust helper with
+/// the host `rustc`. Copied into the Cargo target dir it is the fake game: when its own file
+/// name is `pwc-game` or `pwc-golden` it dumps the environment to `<exe>.env` (so
+/// `pwc-game.exe.env`, the name the tests derive from the executable path) and sleeps; otherwise
+/// the first argument is `rustc` or `cargo`, matching the Unix script.
+#[cfg(windows)]
+fn write_fake_toolchain(root: &Path) -> PathBuf {
+    let source_path = root.join("fake-toolchain.rs");
+    let helper = root.join("fake-toolchain.exe");
+    let log = root.join("cargo.log");
+    let fail_flag = root.join("cargo-should-fail");
+    let host = if cfg!(target_env = "msvc") {
+        format!("{}-pc-windows-msvc", std::env::consts::ARCH)
+    } else {
+        format!("{}-pc-windows-gnu", std::env::consts::ARCH)
+    };
+    let source = format!(
+        r#"
+fn main() {{
+    let exe = std::env::current_exe().unwrap_or_default();
+    let stem = exe
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if stem == "pwc-game" || stem == "pwc-golden" {{
+        let mut text = String::new();
+        for (key, value) in std::env::vars() {{
+            text.push_str(&key);
+            text.push('=');
+            text.push_str(&value);
+            text.push('\n');
+        }}
+        let _ = std::fs::write(format!("{{}}.env", exe.display()), text);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        return;
+    }}
+    let mut args = std::env::args().skip(1);
+    let tool = args.next().unwrap_or_default();
+    let rest: Vec<String> = args.collect();
+    match tool.as_str() {{
+        "rustc" => {{
+            println!("rustc 1.95.0 (fake)");
+            println!("binary: rustc");
+            println!("host: {host}");
+            println!("release: 1.95.0");
+        }}
+        "cargo" => {{
+            let mut manifest = String::new();
+            let mut profile = "debug".to_owned();
+            let mut i = 0;
+            while i < rest.len() {{
+                match rest[i].as_str() {{
+                    "--manifest-path" => {{
+                        if let Some(path) = rest.get(i + 1) {{
+                            manifest = path.clone();
+                            i += 1;
+                        }}
+                    }}
+                    "--release" => profile = "release".to_owned(),
+                    _ => {{}}
+                }}
+                i += 1;
+            }}
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open({log:?})
+                .unwrap();
+            use std::io::Write as _;
+            let cwd = std::env::current_dir().unwrap_or_default();
+            writeln!(file, "cargo {{}} | cwd={{}}", rest.join(" "), cwd.display()).unwrap();
+            if std::path::Path::new({fail_flag:?}).is_file() {{
+                eprintln!("error[E9999]: the fake build was told to fail");
+                std::process::exit(101);
+            }}
+            let manifest_path = std::path::Path::new(&manifest);
+            assert!(manifest_path.is_file(), "missing manifest");
+            let bundle = manifest_path.parent().unwrap().join("bundle/src/lib.rs");
+            assert!(bundle.is_file(), "missing bundle");
+            let target = std::env::var("CARGO_TARGET_DIR").expect("CARGO_TARGET_DIR");
+            let dir = std::path::PathBuf::from(target).join(profile);
+            std::fs::create_dir_all(&dir).unwrap();
+            let me = std::env::current_exe().unwrap();
+            for bin in ["pwc-game.exe", "pwc-golden.exe"] {{
+                std::fs::copy(&me, dir.join(bin)).unwrap();
+            }}
+        }}
+        other => {{
+            let status = std::process::Command::new(other).args(&rest).status().unwrap();
+            std::process::exit(status.code().unwrap_or(1));
+        }}
+    }}
+}}
+"#
+    );
+    std::fs::write(&source_path, source).unwrap();
+    let status = std::process::Command::new("rustc")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&helper)
+        .status()
+        .expect("rustc for the fake toolchain");
+    assert!(status.success(), "fake toolchain failed to compile");
+    helper
+}

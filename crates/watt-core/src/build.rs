@@ -71,9 +71,10 @@ pub fn stale_reason(instance: &Instance, source: &ResolvedSource) -> Result<Opti
     let Some(lock) = instance.lockfile().context("cannot read pwc.lock")? else {
         return Ok(Some("not locked yet".to_owned()));
     };
-    let canonical_source = std::fs::canonicalize(&source.pwc_dir)
+    let canonical_source = crate::paths::canonical_path(&source.pwc_dir)
         .with_context(|| format!("cannot resolve {}", source.pwc_dir.display()))?;
-    if lock.pwc.source != canonical_source {
+    // `paths_equal` so a `\\?\` path stored by an older tool matches the canonical one.
+    if !crate::paths::paths_equal(&lock.pwc.source, &canonical_source) {
         return Ok(Some("the game source changed".to_owned()));
     }
     let pwc = PwcSource::open(&source.pwc_dir)

@@ -146,14 +146,9 @@ impl Settings {
             return self.build_jobs;
         }
         let cpus = std::thread::available_parallelism().map_or(1, |n| n.get() as u32);
-        let mem_gib = std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|text| {
-                text.lines()
-                    .find_map(|l| l.strip_prefix("MemTotal:"))
-                    .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
-            })
-            .map(|kib| (kib / (1024 * 1024)) as u32);
+        // Same truncation as dividing `/proc/meminfo`'s kibibytes by 1024²: whole gibibytes.
+        let mem_gib =
+            crate::process::total_memory_bytes().map(|bytes| (bytes / (1024 * 1024 * 1024)) as u32);
         match mem_gib {
             Some(gib) => (gib / 2).clamp(1, cpus),
             None => cpus,

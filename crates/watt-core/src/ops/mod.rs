@@ -224,9 +224,11 @@ impl OpRequest {
         }
     }
 
-    /// The arguments after `watt-start` that run this request: `op --events json --request
-    /// <json>`. (The human CLI has friendlier subcommands; the JSON form is the stable contract
-    /// between the launcher and its own worker.)
+    /// The arguments after `watt-start` that run this request by hand: `op --events json --request
+    /// <json>`. The GUI writes the same JSON to the worker's stdin instead
+    /// (`op --events json --request-stdin`), so a long mod list is not a command-line argument.
+    /// (The human CLI has friendlier subcommands; the JSON form is the stable contract between
+    /// the launcher and its own worker.)
     pub fn to_args(&self) -> Vec<String> {
         vec![
             "op".to_owned(),

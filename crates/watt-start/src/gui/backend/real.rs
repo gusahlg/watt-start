@@ -488,7 +488,11 @@ impl Backend for RealBackend {
 
     fn start_op(&mut self, request: OpRequest) -> RunningOp {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("watt-start"));
-        match watt_core::client::OpHandle::spawn(&exe, &request) {
+        match watt_core::client::OpHandle::spawn_with_nice(
+            &exe,
+            &request,
+            Some(self.settings.build_nice),
+        ) {
             Ok(handle) => RunningOp::Real(handle),
             Err(e) => RunningOp::Demo(super::demo::DemoOp::immediate_failure(
                 request.kind(),
@@ -499,7 +503,9 @@ impl Backend for RealBackend {
     }
 
     fn open_path(&self, path: &Path) {
-        open_in_file_manager(path);
+        if let Err(err) = open_in_file_manager(path) {
+            eprintln!("cannot open {}: {err}", path.display());
+        }
     }
 
     fn loading(&self) -> bool {
@@ -525,14 +531,20 @@ impl Backend for RealBackend {
     }
 }
 
-#[allow(dead_code)]
-#[cfg(target_os = "macos")]
-fn open_in_file_manager(path: &Path) {
-    let _ = std::process::Command::new("open").arg(path).spawn();
-}
-
-#[allow(dead_code)]
-#[cfg(not(target_os = "macos"))]
-fn open_in_file_manager(path: &Path) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+fn open_in_file_manager(path: &Path) -> std::io::Result<std::process::Child> {
+    // `dunce::simplified` strips a `\\?\` prefix so Explorer accepts the path. On Unix it is
+    // the path unchanged.
+    let path = dunce::simplified(path);
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe").arg(path).spawn()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()
+    }
 }

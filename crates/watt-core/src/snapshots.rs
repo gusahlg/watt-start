@@ -329,10 +329,16 @@ pub fn gc_locked(paths: &Paths, keep: &BTreeSet<PathBuf>, dry_run: bool) -> Resu
         return Ok(deleted);
     }
 
-    let keep_canon: BTreeSet<PathBuf> = keep
-        .iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .collect();
+    // Canonical when possible. A keep path that cannot be canonicalized is still recorded in its
+    // stripped form, so a snapshot is not deleted just because its name could not be resolved.
+    let mut keep_canon = BTreeSet::new();
+    for path in keep {
+        if let Ok(canon) = crate::paths::canonical_path(path) {
+            keep_canon.insert(canon);
+        } else {
+            keep_canon.insert(crate::paths::comparable_path(path));
+        }
+    }
 
     for entry in
         std::fs::read_dir(&sources).with_context(|| format!("cannot read {}", sources.display()))?
@@ -347,7 +353,11 @@ pub fn gc_locked(paths: &Paths, keep: &BTreeSet<PathBuf>, dry_run: bool) -> Resu
         if !path.is_dir() {
             continue;
         }
-        let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        // Cannot prove this directory is unused: leave it. Deleting on a failed canonicalize
+        // would risk removing a snapshot whose path only differs by a `\\?\` prefix.
+        let Ok(canon) = crate::paths::canonical_path(&path) else {
+            continue;
+        };
         if keep_canon.contains(&canon) {
             continue;
         }

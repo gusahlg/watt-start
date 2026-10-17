@@ -27,6 +27,8 @@ libraries and shares its state: instances made with `pwc` show up here, and the 
 ## Install
 
 Prebuilt launchers are on the [releases page](https://github.com/gusahlg/watt-start/releases).
+Linux is the tested platform. Windows 10/11 builds, but has not been run on a Windows machine yet
+(see [ARCHITECTURE.md](ARCHITECTURE.md)).
 The game, its engine and the package manager are downloaded by the launcher itself. The first
 build of an instance compiles the whole game and takes 15–40 minutes. Later builds reuse
 everything that did not change, and instances on the same game version share their builds.
@@ -67,7 +69,7 @@ nix profile add .
 
 ### From source
 
-Linux or Windows, git, a Vulkan driver, and Rust 1.90 or newer (or Nix). The package manager
+Linux or Windows, git, a Vulkan driver, and Rust 1.95 or newer (or Nix, on Linux). The package manager
 has to be checked out next to this repository (`../pwc-package-manager`).
 
 ```sh
@@ -81,6 +83,10 @@ watt-start
 A source build on Windows needs the same Git, MSVC and Vulkan prerequisites as building a game.
 How a release is cut is in [docs/releasing.md](docs/releasing.md). Where the downloads are
 going is in [docs/distribution.md](docs/distribution.md).
+
+A release build on Windows is a GUI program, so the shell does not wait for CLI commands such as
+`watt-start list` and the prompt comes back before their output; use `start /wait watt-start list`
+in cmd.exe or `watt-start list | Out-Host` in PowerShell.
 
 ## Command line
 

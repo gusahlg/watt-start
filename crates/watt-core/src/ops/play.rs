@@ -102,14 +102,7 @@ pub(super) fn run(
     let log = instance_paths
         .logs()
         .join(format!("game-{}.log", now_secs()));
-    // Acquired, made inheritable, then launched: the detached game's copy of the descriptor
-    // keeps the flock held for exactly as long as the game runs, however the launcher itself
-    // exits or crashes afterwards (dropping our own copy here does not release it).
-    let game_lock = crate::process::acquire_inheritable_lock(&instance_paths.game_lock())
-        .context("cannot take the game lock")?;
-    let pid =
-        crate::process::launch_detached(&mut command, &log).context("cannot start the game")?;
-    drop(game_lock);
+    let pid = launch_game(&mut command, &log, &instance_paths.game_lock())?;
 
     let running = RunningGame {
         pid,
@@ -126,6 +119,40 @@ pub(super) fn run(
     reporter.changed(Change::Launched { pid, log });
 
     Ok(format!("Started `{name}` (pid {pid})"))
+}
+
+/// Unix: the game inherits an exclusive flock (`FD_CLOEXEC` cleared) and keeps it until it exits.
+/// Windows: `LockFileEx` does not travel with an inherited handle the way `flock` does, so a
+/// breakaway guard (`watt-start op game-guard`) holds `lock` until the game process exits. The
+/// game itself is also started with `CREATE_BREAKAWAY_FROM_JOB`, so closing the op's job does
+/// not kill it. The game is launched before the guard locks; the instance's `op.lock`, held by
+/// this op throughout, keeps a second Play out of that window.
+fn launch_game(
+    command: &mut std::process::Command,
+    log: &std::path::Path,
+    lock: &std::path::Path,
+) -> anyhow::Result<u32> {
+    #[cfg(unix)]
+    {
+        let game_lock =
+            crate::process::acquire_inheritable_lock(lock).context("cannot take the game lock")?;
+        let pid = crate::process::launch_detached(command, log).context("cannot start the game")?;
+        drop(game_lock);
+        Ok(pid)
+    }
+    #[cfg(windows)]
+    {
+        // `game` (our process handle) is held until the guard has answered, so the pid it
+        // opens is still this game.
+        let mut game = crate::process::spawn_detached(command, log)?;
+        crate::process::await_game_guard(&mut game, lock)?;
+        Ok(game.id())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (command, log, lock);
+        bail!("playing is not implemented on this platform");
+    }
 }
 
 /// `watt-start/game.toml`: display-only (pid, started, log); `game.lock` is the truth.
