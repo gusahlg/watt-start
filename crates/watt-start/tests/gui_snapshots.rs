@@ -154,6 +154,7 @@ fn real_backend() {
     // process reads/writes the environment concurrently).
     unsafe {
         std::env::set_var("PWC_HOME", &home);
+        std::env::set_var("WATT_START_NO_UPDATE_CHECK", "1");
     }
     let app = gui::App::new().expect("RealBackend::new against WATT_START_SHOT_HOME");
 
@@ -476,4 +477,26 @@ fn mods_pending_900_scale_150() {
     app.stage_mod_add_for_tests("survival", "pwc.better-caves");
     app.set_scale_for_tests(1.5);
     shot_at("mods_pending_900_scale_150", egui::vec2(900.0, 600.0), app);
+}
+
+// ---- update ----
+
+#[test]
+fn launcher_update_row() {
+    let mut app = gui::App::for_snapshot_tests_with_update();
+    app.show_instance_overview("survival");
+    shot("launcher_update_row", app);
+}
+
+#[test]
+fn launcher_update_dialog() {
+    let app = gui::App::open_launcher_update_for_tests();
+    shot("launcher_update_dialog", app);
+}
+
+#[test]
+fn settings_about_card() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_settings();
+    shot("settings_about_card", app);
 }

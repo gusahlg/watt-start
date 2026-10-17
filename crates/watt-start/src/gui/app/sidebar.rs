@@ -23,7 +23,7 @@ impl App {
         self.search_row(ui);
         ui.add_space(8.0);
 
-        let bottom_h = 12.0 + 36.0 + 8.0 + 28.0 + 12.0;
+        let bottom_h = super::launcher_update::sidebar_bottom_height(self);
         let list_h = (ui.available_height() - bottom_h).max(0.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -48,6 +48,7 @@ impl App {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 8.0;
                 let width = ui.available_width();
+                super::launcher_update::update_row(ui, self);
                 if Button::new("New instance")
                     .variant(Variant::Secondary)
                     .size(Size::Medium)

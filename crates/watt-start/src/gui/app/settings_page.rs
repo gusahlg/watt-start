@@ -42,6 +42,7 @@ impl App {
                         ui.set_max_width(column);
                         ui.spacing_mut().item_spacing.y = 16.0;
                         page_title(ui);
+                        super::launcher_update::about_card(ui, self);
                         let changed = preferences(ui, &mut self.settings_draft);
                         if changed {
                             self.backend.save_settings(self.settings_draft.clone());

@@ -4,6 +4,7 @@
 mod dialogs;
 mod instance_page;
 mod instance_tabs;
+mod launcher_update;
 mod mods_tab;
 mod new_instance;
 mod settings_page;
@@ -225,6 +226,8 @@ pub struct App {
 
     pub(crate) settings_draft: Settings,
     pub(crate) toasts: Vec<toasts::Toast>,
+    /// Sidebar row, update dialog, and the one-shot restart after a replace.
+    pub(crate) launcher_update: launcher_update::UpdateUi,
 
     /// Per-instance Mods tab: segment, filters, and which bundles are expanded.
     pub(crate) mods_ui: mods_tab::ModsTabState,
@@ -272,6 +275,7 @@ impl App {
             duplicate: None,
             settings_draft,
             toasts: Vec::new(),
+            launcher_update: launcher_update::UpdateUi::default(),
             mods_ui: mods_tab::ModsTabState::default(),
             notes_draft: HashMap::new(),
             display_name_draft: HashMap::new(),
@@ -500,6 +504,7 @@ impl App {
         self.change_source_dialog(ui.ctx());
         self.duplicate_dialog(ui.ctx());
         self.confirm_dialog(ui.ctx());
+        self.launcher_update_modal(ui.ctx());
         self.draw_toasts(ui.ctx());
     }
 
@@ -764,6 +769,7 @@ impl App {
             || self.change_source.is_some()
             || self.duplicate.is_some()
             || self.confirm.is_some()
+            || self.launcher_update.open
     }
 
     /// A Create/Duplicate (or any other instance op) that has not settled yet. Settled results
@@ -828,6 +834,10 @@ impl App {
     /// the new instance's name). Refuses, with a toast, while another op holds any instance it
     /// touches, so a running op is never replaced and orphaned. Returns whether it started.
     pub(crate) fn start_op(&mut self, key: impl Into<String>, request: OpRequest) -> bool {
+        if self.launcher_update.restart_pending {
+            self.toast("Restarting…");
+            return false;
+        }
         let key = key.into();
         let mut touched = vec![key.clone()];
         touched.extend(request.instance().map(str::to_owned));

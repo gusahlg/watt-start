@@ -1204,6 +1204,10 @@ pub struct DemoBackend {
     mods_catalog: Vec<AvailableMod>,
     doctor: Vec<Check>,
     next_op_id: u64,
+    /// Launcher self-update. Never touches the network.
+    launcher_update: watt_core::selfupdate::UpdateStatus,
+    /// `show_update_available` or `WATT_START_DEMO_UPDATE=1` was asked for.
+    fake_update: bool,
 }
 
 impl DemoBackend {
@@ -1383,14 +1387,30 @@ impl DemoBackend {
             },
         ];
 
-        Self {
+        let mut backend = Self {
             settings: Settings::default(),
             instances,
             updates,
             mods_catalog,
             doctor,
             next_op_id: 1,
+            launcher_update: watt_core::selfupdate::UpdateStatus::with_install(
+                watt_core::selfupdate::InstallKind::Development,
+            ),
+            fake_update: false,
+        };
+        if std::env::var("WATT_START_DEMO_UPDATE").as_deref() == Ok("1") {
+            backend.show_update_available();
         }
+        backend
+    }
+
+    /// Pretend release 0.2.0 can be installed. Snapshot tests and `WATT_START_DEMO_UPDATE=1`.
+    ///
+    /// Does not read the process executable and does not use the network.
+    pub(crate) fn show_update_available(&mut self) {
+        self.fake_update = true;
+        self.launcher_update = demo_launcher_update();
     }
 
     /// Like [`DemoBackend::new`], but with no instances (the welcome screen). Only the
@@ -1491,6 +1511,51 @@ impl Backend for DemoBackend {
     }
 
     fn open_path(&self, _path: &Path) {}
+
+    fn launcher_update(&self) -> &watt_core::selfupdate::UpdateStatus {
+        &self.launcher_update
+    }
+
+    fn check_launcher_update(&mut self, _force: bool) {
+        if watt_core::selfupdate::update_check_disabled() {
+            return;
+        }
+        if self.fake_update || std::env::var("WATT_START_DEMO_UPDATE").as_deref() == Ok("1") {
+            self.show_update_available();
+            return;
+        }
+        self.launcher_update.phase = watt_core::selfupdate::Phase::UpToDate;
+        self.launcher_update.last_checked = Some(watt_core::paths::now_secs());
+        let current = self.launcher_update.current_version.clone();
+        self.launcher_update.latest_version = Some(current);
+        self.launcher_update.error = None;
+        self.launcher_update.asset = None;
+        self.launcher_update.can_apply = false;
+    }
+
+    fn apply_launcher_update(&mut self) {}
+}
+
+/// The 0.2.0 release the update snapshots draw. A release install, so the dialog shows
+/// "Update and restart" rather than package-manager instructions.
+fn demo_launcher_update() -> watt_core::selfupdate::UpdateStatus {
+    use watt_core::selfupdate::{Asset, AssetKind, InstallKind, Phase, UpdateStatus};
+    let mut status = UpdateStatus::with_install(InstallKind::ReleaseBinary {
+        exe: PathBuf::from("/tmp/watt-start"),
+    });
+    status.phase = Phase::Available;
+    status.latest_version = Some("0.2.0".to_owned());
+    status.notes = "One-click launcher updates. Windows build.".to_owned();
+    status.notes_url = "https://github.com/gusahlg/watt-start/releases/tag/v0.2.0".to_owned();
+    status.asset = Some(Asset {
+        url: "https://github.com/gusahlg/watt-start/releases/download/v0.2.0/watt-start".to_owned(),
+        sha256: "ab".repeat(32),
+        size: 1024,
+        kind: AssetKind::Executable,
+    });
+    status.can_apply = true;
+    status.last_checked = Some(1_760_640_000);
+    status
 }
 
 /// A timed sequence of envelopes that plays back like a real op.
