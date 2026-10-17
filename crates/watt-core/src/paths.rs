@@ -14,6 +14,8 @@
 //!   sources/v1/pwc-<g12>-<e12>/ game + engine snapshot (siblings, as Cargo needs)
 //!   sources/v1/mods-<m12>/      package manager snapshot (its mods/ is a repository)
 //!   logs/<op id>.log            one log per op
+//!   update-check.json           last successful launcher self-update check
+//!   updates/<version>/          downloaded launcher binaries
 //! <pwc config>/watt-start.toml  launcher settings
 //! <pwc data>/instances/<name>/watt-start/
 //!   meta.toml                   launcher metadata (display name, source binding, generations)
@@ -147,6 +149,16 @@ impl Paths {
     /// The log file of an op.
     pub fn op_log(&self, op_id: &str) -> PathBuf {
         self.logs().join(format!("{op_id}.log"))
+    }
+
+    /// `update-check.json`: the last successful launcher self-update check.
+    pub fn update_state(&self) -> PathBuf {
+        self.root.join("update-check.json")
+    }
+
+    /// `updates/`: downloaded launcher binaries, one directory per version.
+    pub fn updates(&self) -> PathBuf {
+        self.root.join("updates")
     }
 
     /// `<pwc data>/instances/<name>`.

@@ -4,6 +4,7 @@
 
 mod demo;
 mod real;
+mod update;
 
 use std::path::Path;
 
@@ -13,6 +14,7 @@ use watt_core::events::RepoLog;
 use watt_core::git::BranchInfo;
 use watt_core::meta::Meta;
 use watt_core::ops::OpRequest;
+use watt_core::selfupdate::UpdateStatus;
 use watt_core::settings::Settings;
 use watt_core::status::InstanceStatus;
 use watt_core::view::OpView;
@@ -134,4 +136,13 @@ pub trait Backend {
     fn loading(&self) -> bool {
         false
     }
+
+    /// The launcher's own update check, as of the last [`Backend::tick`].
+    fn launcher_update(&self) -> &UpdateStatus;
+
+    /// Start a check. `force` ignores the 24 hour interval (the Settings "Check now" button).
+    fn check_launcher_update(&mut self, force: bool);
+
+    /// Download the executable for this target and replace this process's file.
+    fn apply_launcher_update(&mut self);
 }

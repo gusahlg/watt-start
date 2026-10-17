@@ -14,6 +14,10 @@ use crate::paths::{Repo, write_atomic};
 /// The current file format.
 pub const SETTINGS_FORMAT: u32 = 1;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Launcher settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -26,6 +30,9 @@ pub struct Settings {
     pub rebuild_after_mod_change: bool,
     /// Fetch and look for updates when the launcher starts.
     pub check_updates_on_start: bool,
+    /// Look for a new watt-start release. Missing in an older file means yes.
+    #[serde(default = "default_true")]
+    pub check_launcher_updates: bool,
     /// Copy an instance's worlds aside before an update changes its game revision.
     pub backup_before_update: bool,
     /// How many world backups to keep per instance.
@@ -91,6 +98,7 @@ impl Default for Settings {
             rebuild_after_update: true,
             rebuild_after_mod_change: true,
             check_updates_on_start: true,
+            check_launcher_updates: true,
             backup_before_update: true,
             backups_to_keep: 3,
             build_jobs: 0,
@@ -173,6 +181,7 @@ mod tests {
         let s = Settings::load(&path).unwrap();
         assert!(!s.rebuild_after_mod_change);
         assert!(s.rebuild_after_update);
+        assert!(s.check_launcher_updates);
         assert_eq!(s.remote(Repo::Game), Repo::Game.default_remote());
         assert!(s.effective_jobs() >= 1);
     }

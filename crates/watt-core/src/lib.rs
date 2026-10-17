@@ -7,6 +7,7 @@
 //! - [`ops`]: everything that changes state, as phase-structured, crash-safe operations.
 //! - [`events`], [`view`]: the op event protocol and its folded view for front ends.
 //! - [`catalog`], [`status`], [`doctor`]: read-only views for front ends.
+//! - [`selfupdate`], [`http`]: checking for and installing a new launcher build.
 //! - [`client`]: running ops as child processes and reading their events.
 //!
 //! See ARCHITECTURE.md at the repository root.
@@ -18,12 +19,14 @@ pub mod client;
 pub mod doctor;
 pub mod events;
 pub mod git;
+pub mod http;
 pub mod locks;
 pub mod meta;
 pub mod ops;
 pub mod paths;
 pub mod process;
 pub mod progress;
+pub mod selfupdate;
 pub mod settings;
 pub mod snapshots;
 pub mod status;

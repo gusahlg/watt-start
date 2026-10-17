@@ -65,6 +65,8 @@ pub struct RealBackend {
     branches_job: Option<Job<Result<Vec<BranchInfo>, String>>>,
     doctor: Loaded<Vec<Check>>,
     doctor_job: Option<Job<Vec<Check>>>,
+    /// Launcher self-update. Not an op; see [`super::update`].
+    update: super::update::LauncherUpdate,
 }
 
 #[allow(dead_code)]
@@ -73,6 +75,7 @@ impl RealBackend {
     pub fn new() -> anyhow::Result<Self> {
         let paths = Paths::from_env()?;
         let settings = Settings::load(&paths.settings_file)?;
+        let check_launcher = settings.check_launcher_updates;
         let mut backend = Self {
             paths,
             settings,
@@ -88,7 +91,10 @@ impl RealBackend {
             branches_job: None,
             doctor: Loaded::Idle,
             doctor_job: None,
+            update: super::update::LauncherUpdate::new(),
         };
+        let paths = backend.paths.clone();
+        backend.update.start_check(&paths, false, check_launcher);
         backend.refresh();
         Ok(backend)
     }
@@ -164,6 +170,7 @@ impl Backend for RealBackend {
             self.doctor = Loaded::Ready(result);
             changed = true;
         }
+        changed |= self.update.tick();
         changed
     }
 
@@ -286,6 +293,21 @@ impl Backend for RealBackend {
             || self.mods_job.is_some()
             || self.branches_job.is_some()
             || self.doctor_job.is_some()
+    }
+
+    fn launcher_update(&self) -> &watt_core::selfupdate::UpdateStatus {
+        self.update.status()
+    }
+
+    fn check_launcher_update(&mut self, force: bool) {
+        let paths = self.paths.clone();
+        let enabled = self.settings.check_launcher_updates;
+        self.update.start_check(&paths, force, enabled);
+    }
+
+    fn apply_launcher_update(&mut self) {
+        let paths = self.paths.clone();
+        self.update.start_apply(&paths);
     }
 }
 

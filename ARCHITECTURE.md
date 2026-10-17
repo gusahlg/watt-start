@@ -141,3 +141,55 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
 - Mirrors are full clones. The public repositories are small today (tens of MiB together); a
   partial-clone mode would keep the first download small if the history grows.
 - Windows: the op runner's stderr capture and process groups are Unix-only today.
+
+## Self-update
+
+watt-start can replace itself. The check is not an op: it runs on a background thread in the GUI
+process (and inline in `watt-start self-update`). Game updates stay on the existing `CheckUpdates`
+op.
+
+The published manifest is `watt-start-update.json` at
+`https://github.com/gusahlg/watt-start/releases/latest/download/`, or under `WATT_START_UPDATE_URL`.
+Its signature is the same URL with `.minisig` appended and covers the raw manifest bytes. Assets
+are keyed by target (`x86_64-linux-gnu`, `aarch64-linux-gnu`, `x86_64-windows-msvc`,
+`aarch64-macos`). Only `kind: "executable"` is installed; other kinds are left for a manual
+download. Unknown JSON keys are ignored. A release is offered only when its semver is newer than
+`CARGO_PKG_VERSION`.
+
+`packaging/update-key.pub` (and `update-key-next.pub`, for a rotation) is compiled in by
+`crates/watt-core/build.rs` when the file exists (`cfg(watt_update_signed)`). With a key, a missing
+or invalid signature is a hard failure. Without one, the updater trusts HTTPS plus the sha256 in
+the manifest, and the About card says updates are not signed. The secret key is never in the repo.
+
+A successful check is remembered in `<pwc data>/watt-start/update-check.json` (`last_checked`,
+`latest_seen`). Failures and a 404 ("no update information") are not recorded, so the next launch
+retries. The GUI checks at startup when `check-launcher-updates` is true (the default) and the last
+success is older than 24 hours. "Check now" forces it. `WATT_START_NO_UPDATE_CHECK=1` skips the
+network entirely, which is how tests stay offline. A startup failure is not a toast; it shows on
+the About card.
+
+`detect_install` classifies the running executable after resolving symlinks: Nix, Flatpak, Scoop,
+a system package (`/usr` but not `/usr/local`), `cargo install`, a development build
+(`debug_assertions` or a `target/` directory), a read-only directory, or a release binary. Package
+managers win over the development rule. Everything except a writable release binary gets
+instructions and no "Update and restart" button. The same rules are what `watt-start self-update`
+prints. `--check` stops before installing; `--yes` installs without a prompt; a non-interactive
+stdin without `--yes` does not install. The CLI does not restart the process.
+
+A release install downloads into `<pwc data>/watt-start/updates/<version>/`, hashing while it
+streams, and rejects a size or sha256 mismatch (size `0` is a real size). The file is then copied
+beside the executable and swapped with rename-then-rename: the running file becomes `<stem>-prev`,
+which is kept, and the new file takes its place. On Windows the existing `-prev` is removed with
+short retries, falling back to `-prev-<pid>`. If the second rename fails, the previous file is
+renamed back. Unix builds are marked `0o755`. Downloads are capped at 512 MiB.
+
+After a successful replace the GUI sets `restart_pending`, spawns the new executable detached with
+`WATT_START_UPDATED_FROM` set to the version just replaced (the path is captured before the
+rename; on Linux `current_exe` afterwards follows `-prev`), and closes the window. The next launch
+toasts `Updated to <version>`. `start_op` refuses while that restart is pending. "Later"
+hides the sidebar row for the rest of the session only.
+
+The HTTP client is ureq 3 with rustls (`User-Agent: watt-start/<version>`, gzip, 10 second header
+timeouts). The GUI row, dialog, and About card live in `gui/app/launcher_update.rs` and use the
+Filament widgets. `WATT_START_DEMO_UPDATE=1` (or `DemoBackend::show_update_available`) fakes an
+available update without using the network.

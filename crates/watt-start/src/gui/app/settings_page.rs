@@ -48,6 +48,7 @@ impl App {
                         }
                         maintenance_card(ui, &maintenance, self);
                         doctor_card(ui, &doctor, self);
+                        super::launcher_update::about_card(ui, self);
                     });
             });
     }

@@ -5,6 +5,7 @@
 //! (`--events json --request <json>`); people and scripts use the friendlier subcommands.
 
 mod gui;
+mod self_update_cli;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -92,6 +93,15 @@ enum Command {
         /// Instance (default: all managed instances).
         instance: Option<String>,
     },
+    /// Check for a new watt-start release, and install it when this copy can replace itself.
+    SelfUpdate {
+        /// Only report; do not install.
+        #[arg(long)]
+        check: bool,
+        /// Install without asking.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -174,6 +184,9 @@ fn main() -> ExitCode {
         ),
         Some(Command::CheckUpdates { instance }) => {
             run_op(&OpRequest::CheckUpdates { instance }, Events::Human)
+        }
+        Some(Command::SelfUpdate { check, yes }) => {
+            self_update_cli::run(check, yes).map(|()| ExitCode::SUCCESS)
         }
     };
     match result {
