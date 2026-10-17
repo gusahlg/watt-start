@@ -1554,7 +1554,7 @@ fn demo_launcher_update() -> watt_core::selfupdate::UpdateStatus {
         kind: AssetKind::Executable,
     });
     status.can_apply = true;
-    status.last_checked = Some(1_760_640_000);
+    status.last_checked = Some(1_792_176_000);
     status
 }
 

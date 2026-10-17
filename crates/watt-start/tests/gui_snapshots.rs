@@ -494,9 +494,10 @@ fn launcher_update_dialog() {
     shot("launcher_update_dialog", app);
 }
 
+/// The About card is the last card on the page; a tall window shows it without scrolling.
 #[test]
 fn settings_about_card() {
-    let mut app = gui::App::for_snapshot_tests();
+    let mut app = gui::App::for_snapshot_tests_with_update();
     app.show_settings();
-    shot("settings_about_card", app);
+    shot_at("settings_about_card", egui::vec2(1280.0, 1900.0), app);
 }
