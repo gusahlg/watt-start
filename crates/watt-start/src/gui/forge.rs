@@ -31,10 +31,6 @@ pub struct ForgeStyle {
     pub title: String,
     /// Milliseconds since the op started, from the GUI's own clock (`view.t_ms` only moves when
     /// an event arrives, so it stalls during a quiet link). `None`: use `view.t_ms`.
-    ///
-    /// The shell passes this. The view still clocks `view.t_ms` until it switches over, so the
-    /// field is unread in this file and in the forge example, which compiles `forge.rs` alone.
-    #[allow(dead_code)]
     pub elapsed_ms: Option<u64>,
 }
 

@@ -634,22 +634,29 @@ fn paint_header_card(
 /// vertical span follows the corner radius.
 fn paint_accent_wash(painter: &egui::Painter, rect: egui::Rect, accent: egui::Color32) {
     const SLICES: usize = 24;
+    const CORNER_STEPS: usize = 12;
     let wash_w = rect.width() * WASH_REACH;
     if wash_w < 1.0 {
         return;
     }
+    // Dense samples across the rounded corner (a coarse slice there cuts a visible notch),
+    // then even slices for the rest of the fade.
+    let corner = HEADER_RADIUS.min(wash_w);
+    let mut xs: Vec<f32> = (0..=CORNER_STEPS)
+        .map(|i| corner * i as f32 / CORNER_STEPS as f32)
+        .collect();
+    xs.extend((1..=SLICES).map(|i| corner + (wash_w - corner) * i as f32 / SLICES as f32));
     let mut mesh = egui::Mesh::default();
-    for i in 0..SLICES {
-        let t0 = i as f32 / SLICES as f32;
-        let t1 = (i + 1) as f32 / SLICES as f32;
-        let x0 = rect.left() + wash_w * t0;
-        let x1 = rect.left() + wash_w * t1;
+    for pair in xs.windows(2) {
+        let (t0, t1) = (pair[0] / wash_w, pair[1] / wash_w);
+        let x0 = rect.left() + pair[0];
+        let x1 = rect.left() + pair[1];
         // Vertex colours are premultiplied; an unmultiplied wash would bloom to full accent.
         let c0 = premul(accent, wash_alpha(t0));
         let c1 = premul(accent, wash_alpha(t1));
         let (y0t, y0b) = rounded_span(rect, HEADER_RADIUS, x0);
         let (y1t, y1b) = rounded_span(rect, HEADER_RADIUS, x1);
-        if y0b <= y0t || y1b <= y1t {
+        if y0b < y0t || y1b <= y1t {
             continue;
         }
         let i0 = mesh.vertices.len() as u32;
