@@ -253,9 +253,7 @@ pub struct App {
 /// A settings edit inside the half-second save delay is written when the window closes.
 impl Drop for App {
     fn drop(&mut self) {
-        if self.settings_save_at.take().is_some() {
-            self.backend.save_settings(self.settings_draft.clone());
-        }
+        self.save_pending_settings();
     }
 }
 
@@ -851,11 +849,21 @@ impl App {
         });
     }
 
-    /// Write a settings draft that has been dirty for half a second. Runs from [`App::ui`], so
-    /// leaving the settings page still saves.
+    /// Write a settings draft that has been dirty for half a second, or at once when the
+    /// settings page is no longer showing (a dialog or op may read the saved settings next).
     fn flush_settings(&mut self) {
-        if self.settings_save_at.is_some_and(|at| Instant::now() >= at) {
-            self.settings_save_at = None;
+        let settings_open = matches!(self.main_view, Some(MainView::Settings));
+        if self
+            .settings_save_at
+            .is_some_and(|at| !settings_open || Instant::now() >= at)
+        {
+            self.save_pending_settings();
+        }
+    }
+
+    /// Write the settings draft now if a delayed save is pending.
+    fn save_pending_settings(&mut self) {
+        if self.settings_save_at.take().is_some() {
             self.backend.save_settings(self.settings_draft.clone());
         }
     }
@@ -966,6 +974,8 @@ impl App {
             OpRequest::Maintenance { .. } => "Maintenance".to_owned(),
             _ => self.instance_title(&key),
         };
+        // The op runs in a child process that reads settings from disk.
+        self.save_pending_settings();
         let mut op = self.backend.start_op(request.clone());
         if let Some(waker) = &self.op_waker {
             op.set_waker(Arc::clone(waker));
