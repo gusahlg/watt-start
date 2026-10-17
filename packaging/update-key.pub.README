@@ -1,0 +1,33 @@
+# Launcher update signing key
+
+Self-update verifies `watt-start-update.json` with minisign when
+`packaging/update-key.pub` exists at compile time. This repository does not
+ship a key yet. Create one on a machine you control, and never commit the
+secret half.
+
+```sh
+minisign -G -p packaging/update-key.pub -s watt-start-update.key
+```
+
+minisign asks for a password. Keep it; the release workflow needs it.
+`-s` defaults to `~/.minisign/minisign.key` if you omit it. Put the secret
+somewhere outside the repository either way. `watt-start-update.key`,
+`minisign.key` and `*.sec` are gitignored.
+
+Then, in the GitHub repository settings, add two Actions secrets:
+
+- `MINISIGN_SECRET_KEY`: the whole secret-key file, comment lines included.
+- `MINISIGN_PASSWORD`: its password. minisign reads it from stdin in CI.
+
+A key made with `minisign -G -W` has no password; leave `MINISIGN_PASSWORD`
+unset for it. Keep an offline backup of the secret key: losing it means the
+next release cannot be verified by builds that trust this key (see rotation in
+`docs/releasing.md`).
+
+Commit `packaging/update-key.pub` when builds should require a signature.
+Until that file exists, release binaries treat the manifest as unsigned
+(HTTPS plus the sha256 in the manifest) and the About card says so. Once it is
+committed, every release must be signed, so set the secrets first.
+
+Rotation, what the workflow does when the secret is absent, and manual
+rollback are in `docs/releasing.md`.

@@ -1,3 +1,12 @@
 /target
 /result
 *.tmp
+
+# Local `xtask manifest --dist dist` output and unpacked release trees.
+/dist/
+
+# minisign secret keys. packaging/update-key.pub is the public half and is
+# committed once it exists; the secret never is.
+/watt-start-update.key
+/minisign.key
+*.sec
