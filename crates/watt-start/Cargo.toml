@@ -8,6 +8,7 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
+build = "build.rs"
 
 [dependencies]
 watt-core.workspace = true
@@ -22,6 +23,13 @@ serde_json.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+
+# Host platform, not the target being built. A Linux host, including
+# `cargo check --target x86_64-pc-windows-msvc`, does not compile this crate
+# and does not need rc.exe. build.rs calls it only when the host is Windows
+# and the target is Windows too.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1.34", default-features = false }
 
 [lints]
 workspace = true

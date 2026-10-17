@@ -26,19 +26,61 @@ libraries and shares its state: instances made with `pwc` show up here, and the 
 
 ## Install
 
-You need Linux, git, a Vulkan driver, and Rust 1.90 or newer (or Nix). The game, its engine and
-the package manager are downloaded by the launcher itself.
+Prebuilt launchers are on the [releases page](https://github.com/gusahlg/watt-start/releases).
+The game, its engine and the package manager are downloaded by the launcher itself. The first
+build of an instance compiles the whole game and takes 15–40 minutes. Later builds reuse
+everything that did not change, and instances on the same game version share their builds.
+
+### Releases
+
+The installers put watt-start in your user account. They do not ask for administrator rights.
+
+Linux:
+
+```sh
+curl -fsSL https://github.com/gusahlg/watt-start/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/gusahlg/watt-start/releases/latest/download/install.ps1 | iex
+```
+
+A release install can update the launcher from that same page. Nix and `cargo install` builds
+do not replace themselves; they tell you how to update.
+
+On NixOS the release binary cannot find libwayland or the Vulkan loader. Use the flake instead
+(`nix profile add github:gusahlg/watt-start`).
+
+Building a *game* on Windows needs Git for Windows, rustup with the MSVC toolchain, the Visual
+Studio Build Tools workload "Desktop development with C++", and a Vulkan driver. The installer
+does not install those.
+
+### Nix
+
+```sh
+nix profile add github:gusahlg/watt-start
+# or, from a checkout of this repo:
+nix profile add .
+```
+
+### From source
+
+Linux or Windows, git, a Vulkan driver, and Rust 1.90 or newer (or Nix). The package manager
+has to be checked out next to this repository (`../pwc-package-manager`).
 
 ```sh
 git clone https://github.com/gusahlg/pwc-package-manager
 git clone https://github.com/gusahlg/watt-start
 cd watt-start
-cargo install --path crates/watt-start   # or: nix profile add .
+cargo install --path crates/watt-start --locked
 watt-start
 ```
 
-The first build of an instance compiles the whole game and takes 15–40 minutes. Later builds
-reuse everything that did not change, and instances on the same game version share their builds.
+A source build on Windows needs the same Git, MSVC and Vulkan prerequisites as building a game.
+How a release is cut is in [docs/releasing.md](docs/releasing.md). Where the downloads are
+going is in [docs/distribution.md](docs/distribution.md).
 
 ## Command line
 
