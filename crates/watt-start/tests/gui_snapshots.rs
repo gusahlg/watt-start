@@ -213,3 +213,66 @@ fn widget_gallery() {
         .save(dir.join("widget_gallery.png"))
         .expect("save png");
 }
+
+// ---- dialogs ----
+
+fn shot_sized(name: &str, mut app: gui::App, size: egui::Vec2) {
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .with_accessibility_check(false)
+        .wgpu()
+        .build_ui(|ui| full_bleed(ui, |ui| app.ui(ui)));
+    harness.run_steps(3);
+    let image = harness.render().expect("render");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("gui-shots");
+    std::fs::create_dir_all(&dir).expect("create target/gui-shots");
+    image
+        .save(dir.join(format!("{name}.png")))
+        .expect("save png");
+}
+
+#[test]
+fn new_instance_dialog_linked() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_new_instance_linked_for_tests("/home/player/repos/project_watt_cubed");
+    shot("new_instance_dialog_linked", app);
+}
+
+#[test]
+fn change_source_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_change_source_dialog("survival");
+    shot("change_source_dialog", app);
+}
+
+#[test]
+fn duplicate_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_duplicate_dialog("survival");
+    shot("duplicate_dialog", app);
+}
+
+#[test]
+fn delete_confirm_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.ask_delete_instance("survival");
+    shot("delete_confirm_dialog", app);
+}
+
+#[test]
+fn toasts() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_toasts_for_tests();
+    shot("toasts", app);
+}
+
+#[test]
+fn settings_page_small() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_settings();
+    shot_sized("settings_page_small", app, egui::vec2(900.0, 600.0));
+}
