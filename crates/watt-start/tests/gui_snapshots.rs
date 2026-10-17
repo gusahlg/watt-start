@@ -326,3 +326,47 @@ fn mods_narrow() {
     app.show_instance_mods("survival");
     shot_at("mods_narrow", egui::vec2(900.0, 600.0), app);
 }
+
+// ---- dialogs ----
+
+#[test]
+fn new_instance_dialog_linked() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_new_instance_linked_for_tests("/home/player/repos/project_watt_cubed");
+    shot("new_instance_dialog_linked", app);
+}
+
+#[test]
+fn change_source_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_change_source_dialog("survival");
+    shot("change_source_dialog", app);
+}
+
+#[test]
+fn duplicate_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_duplicate_dialog("survival");
+    shot("duplicate_dialog", app);
+}
+
+#[test]
+fn delete_confirm_dialog() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.ask_delete_instance("survival");
+    shot("delete_confirm_dialog", app);
+}
+
+#[test]
+fn toasts() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_toasts_for_tests();
+    shot("toasts", app);
+}
+
+#[test]
+fn settings_page_small() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_settings();
+    shot_at("settings_page_small", egui::vec2(900.0, 600.0), app);
+}
