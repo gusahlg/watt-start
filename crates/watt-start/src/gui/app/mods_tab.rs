@@ -458,6 +458,9 @@ struct ModelCache {
     nav: Vec<NavRow>,
     /// Direct mods with a newer catalogue version that are not staged yet.
     update_n: usize,
+    /// Details-panel model for the selected id. Dropped with the rest when data or staging
+    /// changes.
+    detail: Option<Detail>,
 }
 
 /// A package that requires another, for the details panel.
@@ -609,14 +612,18 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Keyboard test: the mods search string.
+    /// Snapshot helper: stage a newest-version relock for one direct mod.
     #[allow(dead_code)]
-    pub(crate) fn mods_search_for_tests(&self, instance: &str) -> String {
-        self.mods_ui
-            .views
-            .get(instance)
-            .map(|view| view.search.clone())
-            .unwrap_or_default()
+    pub(crate) fn mods_stage_update_for_tests(&mut self, instance: &str, id: &str) {
+        self.with_staged(instance, |staged| stage_update(staged, id));
+    }
+
+    /// Whether the Mods tab wants Enter this frame: a row is selected, so Enter acts on it
+    /// instead of starting Play. Read by the app's shortcut handler before the tab paints.
+    pub(crate) fn mods_claims_enter(&self) -> bool {
+        self.instance_tab == super::InstanceTab::Mods
+            && matches!(&self.main_view, Some(super::MainView::Instance(name))
+                if self.mods_ui.views.get(name).is_some_and(|view| view.selected.is_some()))
     }
 
     fn instance_has_mods(&self, instance: &str) -> bool {
@@ -760,7 +767,14 @@ fn paint_tab(
     let reserve = if bar_h > 0.5 { bar_h + BAR_GAP } else { 0.0 };
 
     ensure_cache(cache, entry, catalog, view, staged);
-    let (installed_n, browse_n, update_n, categories) = cache_toolbar(cache);
+    let (installed_n, browse_n, update_n) = cache
+        .as_ref()
+        .map(|item| (item.installed_n, item.browse_n, item.update_n))
+        .unwrap_or((0, None, 0));
+    let categories = cache
+        .as_ref()
+        .map(|item| item.categories.as_slice())
+        .unwrap_or(&[]);
     let before = (
         view.search.clone(),
         view.category.clone(),
@@ -771,7 +785,7 @@ fn paint_tab(
         ui,
         view,
         &entry.card.name,
-        &categories,
+        categories,
         installed_n,
         browse_n,
         update_n,
@@ -800,7 +814,10 @@ fn paint_tab(
     let show_push = !wide && view.details_open && selected.is_some();
     if list_h > 1.0 {
         if show_push {
-            let rect = list_rect(ui, list_h);
+            let mut rect = list_rect(ui, list_h);
+            if reserve <= 0.0 {
+                rect.max.y -= 16.0;
+            }
             let _ = ui.allocate_rect(rect, Sense::hover());
             set_click(
                 &mut click,
@@ -811,9 +828,15 @@ fn paint_tab(
             let panel_w = 320.0;
             let list_w = (full.width() - gap - panel_w).max(120.0);
             let list_rect = Rect::from_min_size(pos2(full.left(), list_top), vec2(list_w, list_h));
+            // Without the pending bar the card would sit on the window edge.
+            let panel_h = if reserve > 0.0 {
+                list_h
+            } else {
+                (list_h - 16.0).max(0.0)
+            };
             let panel_rect = Rect::from_min_size(
                 pos2(full.left() + list_w + gap, list_top),
-                vec2(panel_w, list_h),
+                vec2(panel_w, panel_h),
             );
             let _ = ui.allocate_rect(
                 Rect::from_min_size(pos2(full.left(), list_top), vec2(full.width(), list_h)),
@@ -853,7 +876,7 @@ fn paint_tab(
     view.pending_scroll = false;
     if bar_h > 0.5 {
         let bar_rect = Rect::from_min_max(pos2(full.left(), full.bottom() - bar_h), full.max);
-        let impact = cache.as_ref().map(|item| item.impact.clone());
+        let impact = cache.as_ref().map(|item| &item.impact);
         set_click(
             &mut click,
             paint_pending(
@@ -861,7 +884,7 @@ fn paint_tab(
                 bar_rect,
                 staged,
                 entry,
-                impact.as_ref(),
+                impact,
                 &mut view.impact_open,
                 bar,
                 stacked,
@@ -941,12 +964,13 @@ fn update_all_button(ui: &mut Ui, n: usize) -> Click {
         return Click::None;
     }
     let label = format!("Update all ({n})");
-    if widgets::Button::new(&label)
+    let response = widgets::Button::new(&label)
         .variant(Variant::Ghost)
         .size(Size::Small)
         .show(ui)
-        .clicked()
-    {
+        .on_hover_text("Move every outdated mod to its newest compatible version");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+    if response.clicked() {
         Click::UpdateAll
     } else {
         Click::None
@@ -1906,7 +1930,27 @@ fn required_by(pkg: &PackageCard, packages: &[PackageCard]) -> String {
         .unwrap_or_else(|| "another mod".to_owned())
 }
 
+/// Rows outside the scroll viewport only reserve their height: no trail, no galleys, no
+/// animation lookups. The row the keyboard just moved to is always painted so it can scroll.
+fn skip_offscreen(ui: &mut Ui, height: f32, scroll_here: bool) -> bool {
+    if scroll_here {
+        return false;
+    }
+    let rect = Rect::from_min_size(
+        ui.next_widget_position(),
+        vec2(ui.available_width(), height),
+    );
+    if ui.is_rect_visible(rect) {
+        return false;
+    }
+    let _ = ui.allocate_exact_size(rect.size(), Sense::hover());
+    true
+}
+
 fn paint_add_row(ui: &mut Ui, row: &AddRow, chrome: &Chrome<'_>, p: &Palette) -> RowHit {
+    if skip_offscreen(ui, ROW_H, chrome.scroll && chrome.picks(&row.id)) {
+        return RowHit::None;
+    }
     let (icon, color) = kind_mark(&row.kind, p);
     let mut trail = will_add_pill(p, &row.pill, row.compat.as_ref());
     trail.push(Trail::Undo);
@@ -1949,6 +1993,9 @@ fn paint_plain_row(
     chrome: &Chrome<'_>,
     p: &Palette,
 ) -> RowHit {
+    if skip_offscreen(ui, ROW_H, chrome.scroll && chrome.picks(&row.id)) {
+        return RowHit::None;
+    }
     let (icon, color) = if unresolved {
         (Icon::HollowCube, p.bad)
     } else {
@@ -2005,12 +2052,19 @@ fn paint_plain_row(
 }
 
 fn paint_direct_row(ui: &mut Ui, row: &DirectRow, chrome: &Chrome<'_>, p: &Palette) -> RowHit {
+    if skip_offscreen(ui, ROW_H, chrome.scroll && chrome.picks(&row.pkg.id)) {
+        return RowHit::None;
+    }
     let (icon, color) = kind_mark(&row.pkg.kind, p);
     let trail = direct_trail(row, p);
     let tint = if chrome.picks(&row.pkg.id) {
         Some(theme::with_alpha(p.volt, 15))
+    } else if row.removing {
+        Some(theme::with_alpha(p.bad, TINT))
+    } else if row.updating_to.is_some() || row.pinned.is_some() {
+        Some(theme::with_alpha(p.arc, TINT))
     } else {
-        row.removing.then(|| theme::with_alpha(p.bad, TINT))
+        None
     };
     draw_row(
         ui,
@@ -2045,7 +2099,11 @@ fn paint_direct_row(ui: &mut Ui, row: &DirectRow, chrome: &Chrome<'_>, p: &Palet
 
 fn direct_trail(row: &DirectRow, p: &Palette) -> Vec<Trail> {
     let mut trail = Vec::new();
-    if let Some(version) = &row.newer {
+    if let Some(version) = &row.newer
+        && row.updating_to.is_none()
+        && row.pinned.is_none()
+        && !row.removing
+    {
         trail.push(Trail::Newer(version.clone()));
     }
     if row.pkg.kind == "bundle" && row.member_total > 0 {
@@ -2090,6 +2148,9 @@ fn paint_member_row(
     chrome: &Chrome<'_>,
     p: &Palette,
 ) -> RowHit {
+    if skip_offscreen(ui, ROW_H, chrome.scroll && chrome.picks(&pkg.id)) {
+        return RowHit::None;
+    }
     let (icon, color) = kind_mark(&pkg.kind, p);
     let mut trail = Vec::new();
     if removing {
@@ -2138,6 +2199,9 @@ fn paint_member_row(
 }
 
 fn paint_browse_row(ui: &mut Ui, row: &BrowseRow, chrome: &Chrome<'_>, p: &Palette) -> RowHit {
+    if skip_offscreen(ui, BROWSE_H, chrome.scroll && chrome.picks(&row.id)) {
+        return RowHit::None;
+    }
     let (icon, color) = kind_mark(&row.kind, p);
     let trail = browse_trail(row, p);
     let removing = matches!(row.action, BrowseAction::Removing);
@@ -3816,7 +3880,7 @@ fn bar_counts(staged: &StagedMods, packages: &[PackageCard], impact: Option<&Imp
     let mut mods = 0;
     let mut deps = 0;
     for line in &impact.adds {
-        if roots.contains(line.id.as_str()) && !line.library {
+        if roots.contains(line.id.as_str()) {
             mods += 1;
         } else {
             deps += 1;
@@ -4055,9 +4119,10 @@ fn paint_diff_popup(ui: &mut Ui, impact: Option<&Impact>) {
             .max_height(320.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 0.0;
                 for row in &rows {
                     if row.gap {
-                        ui.add_space(4.0);
+                        ui.add_space(8.0);
                     }
                     paint_diff_row(ui, row, &p);
                 }
@@ -4100,6 +4165,10 @@ fn popup_rows(impact: &Impact) -> Vec<PopupRow> {
     push_popup(&mut rows, &extras, true, true, impact);
     push_popup(&mut rows, &removes, false, false, impact);
     push_popup(&mut rows, &orphans, false, true, impact);
+    // One gap, between what arrives and what leaves.
+    for index in 1..rows.len() {
+        rows[index].gap = rows[index].sign != rows[index - 1].sign;
+    }
     rows
 }
 
@@ -4114,8 +4183,7 @@ fn push_popup(
     suffix: bool,
     impact: &Impact,
 ) {
-    let gap_before = !rows.is_empty();
-    for (index, line) in lines.iter().enumerate() {
+    for line in lines {
         let suffix = if !suffix {
             String::new()
         } else if adding {
@@ -4134,7 +4202,7 @@ fn push_popup(
             color_ok: adding,
             main: diff_main(line),
             suffix,
-            gap: gap_before && index == 0,
+            gap: false,
         });
     }
 }
@@ -4224,6 +4292,7 @@ fn ensure_cache(
             categories: Vec::new(),
             nav: Vec::new(),
             update_n: 0,
+            detail: None,
         });
     }
     let view_fp = view_fingerprint(view);
@@ -4252,7 +4321,7 @@ fn rebuild_view(
     staged: &StagedMods,
     view_fp: u64,
 ) {
-    let impact = item.impact.clone();
+    let impact = &item.impact;
     if view.segment == 1 {
         let model = build_browse(entry, catalog, view, staged, entry.card.game.api.as_deref());
         let sectioned = view.search.trim().is_empty();
@@ -4263,10 +4332,10 @@ fn rebuild_view(
         };
         item.browse = Some(model);
         item.installed = None;
-        item.installed_n = build_installed(entry, catalog, view, staged, &impact).top_count();
+        item.installed_n = build_installed(entry, catalog, view, staged, impact).top_count();
         item.categories = category_counts_browse(catalog.mods(), view.show_libraries);
     } else {
-        let model = build_installed(entry, catalog, view, staged, &impact);
+        let model = build_installed(entry, catalog, view, staged, impact);
         item.nav = nav_installed(&model);
         item.installed_n = model.top_count();
         item.installed = Some(model);
@@ -4276,20 +4345,6 @@ fn rebuild_view(
     }
     item.update_n = count_updates(&entry.card.packages, catalog.mods(), staged);
     item.view_fp = view_fp;
-}
-
-fn cache_toolbar(
-    cache: &Option<ModelCache>,
-) -> (usize, Option<usize>, usize, Vec<(String, usize)>) {
-    let Some(cache) = cache else {
-        return (0, None, 0, Vec::new());
-    };
-    (
-        cache.installed_n,
-        cache.browse_n,
-        cache.update_n,
-        cache.categories.clone(),
-    )
 }
 
 fn count_updates(packages: &[PackageCard], catalog: &[AvailableMod], staged: &StagedMods) -> usize {
@@ -4488,10 +4543,9 @@ fn nav_browse(model: &BrowseModel, sectioned: bool) -> Vec<NavRow> {
 fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
     let mut hasher = DefaultHasher::new();
     entry.card.game.api.hash(&mut hasher);
-    let mut packages: Vec<&PackageCard> = entry.card.packages.iter().collect();
-    packages.sort_by(|a, b| a.id.cmp(&b.id));
-    packages.len().hash(&mut hasher);
-    for pkg in packages {
+    // Runs every frame: hash in the given order (a reorder only costs one rebuild).
+    entry.card.packages.len().hash(&mut hasher);
+    for pkg in &entry.card.packages {
         pkg.id.hash(&mut hasher);
         pkg.version.hash(&mut hasher);
         pkg.direct.hash(&mut hasher);
@@ -4505,9 +4559,9 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
         pkg.authors.hash(&mut hasher);
         pkg.license.hash(&mut hasher);
     }
-    let mut missing = unresolved_ids(entry);
-    missing.sort();
-    missing.hash(&mut hasher);
+    for id in entry.card.manifest.mods.keys() {
+        id.as_str().hash(&mut hasher);
+    }
     match catalog {
         Catalog::Pending => 0u8.hash(&mut hasher),
         Catalog::Failed(message) => {
@@ -4517,10 +4571,8 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
         Catalog::Ready { mods, warnings } => {
             2u8.hash(&mut hasher);
             warnings.hash(&mut hasher);
-            let mut items: Vec<&AvailableMod> = mods.iter().collect();
-            items.sort_by(|a, b| a.id.cmp(&b.id));
-            items.len().hash(&mut hasher);
-            for item in items {
+            mods.len().hash(&mut hasher);
+            for item in mods {
                 item.id.hash(&mut hasher);
                 item.version.hash(&mut hasher);
                 item.versions.hash(&mut hasher);
@@ -4578,7 +4630,8 @@ fn handle_mods_keys(
     if pressed(ui, Key::Slash) {
         view.focus_search = true;
     }
-    if pressed(ui, Key::Escape) {
+    // Escape and Enter only mean something with a selection; otherwise leave them to the app.
+    if view.selected.is_some() && pressed(ui, Key::Escape) {
         view.selected = None;
         view.details_open = false;
         view.key_nav = false;
@@ -4597,13 +4650,14 @@ fn handle_mods_keys(
     if arrows && pressed(ui, Key::ArrowUp) {
         move_selection(view, nav, false);
     }
-    if pressed(ui, Key::Enter) && view.selected.is_some() {
+    if view.selected.is_some() && pressed(ui, Key::Enter) {
         view.details_open = true;
     }
-    if pressed(ui, Key::Delete) {
+    if view.selected.is_some() && pressed(ui, Key::Delete) {
         set_click(keys, delete_click(nav, view.selected.as_deref()));
     }
-    if pressed(ui, Key::Space)
+    if view.selected.is_some()
+        && pressed(ui, Key::Space)
         && let Some(row) = nav
             .iter()
             .find(|row| Some(row.id.as_str()) == view.selected.as_deref())
@@ -4679,6 +4733,7 @@ fn select_row(view: &mut InstanceModsUi, id: &str, push: bool) {
         view.details_open = true;
     }
 }
+#[derive(Clone, Debug)]
 struct Detail {
     id: String,
     name: String,
@@ -4750,7 +4805,7 @@ fn mod_api_line(req: Option<&str>, have: Option<&str>) -> String {
     match (req, have) {
         (Some(req), Some(have)) => format!("{req} · instance has {have}"),
         (Some(req), None) => req.to_owned(),
-        (None, Some(have)) => format!("instance has {have}"),
+        (None, Some(have)) => format!("any · instance has {have}"),
         (None, None) => "—".to_owned(),
     }
 }
@@ -4806,11 +4861,17 @@ fn resolve_detail(
                 .collect()
         })
         .unwrap_or_default();
-    let required_by = cache
+    // A bundle that includes this package gets its own "In bundle" link; do not list it twice.
+    let required_by: Vec<RevRef> = cache
         .as_ref()
         .filter(|cached| cached.instance == entry.card.name)
         .and_then(|cached| cached.rev.get(id))
-        .cloned()
+        .map(|refs| {
+            refs.iter()
+                .filter(|referrer| bundles.iter().all(|bundle| bundle.id != referrer.id))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     let included_by = bundles.first().map(|bundle| bundle.name.clone());
     let required_note = included_by
@@ -4900,7 +4961,7 @@ fn paint_details(
     entry: &InstanceEntry,
     catalog: &Catalog,
     staged: &StagedMods,
-    cache: &Option<ModelCache>,
+    cache: &mut Option<ModelCache>,
 ) -> Click {
     let Some(selected) = view.selected.clone() else {
         return Click::None;
@@ -4940,7 +5001,19 @@ fn paint_details(
     if inner.width() < 8.0 || inner.height() < 8.0 {
         return Click::None;
     }
-    let detail = resolve_detail(&selected, entry, catalog, staged, cache);
+    let fresh = cache
+        .as_ref()
+        .and_then(|item| item.detail.as_ref())
+        .is_some_and(|detail| detail.id == selected);
+    if !fresh {
+        let detail = resolve_detail(&selected, entry, catalog, staged, cache);
+        if let Some(item) = cache.as_mut() {
+            item.detail = Some(detail);
+        }
+    }
+    let Some(detail) = cache.as_ref().and_then(|item| item.detail.as_ref()) else {
+        return Click::None;
+    };
     let mut body = ui.new_child(
         UiBuilder::new()
             .max_rect(inner)
@@ -4953,7 +5026,7 @@ fn paint_details(
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
             ui.set_width(ui.available_width());
-            paint_detail_body(ui, &detail, view, back)
+            paint_detail_body(ui, detail, view, back)
         })
         .inner
 }
@@ -4967,11 +5040,9 @@ fn paint_detail_body(
     let p = theme::palette(ui.ctx());
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     paint_detail_header(ui, detail, &p);
-    ui.add_space(8.0);
-    paint_detail_version(ui, detail, &p);
-    ui.add_space(8.0);
-    paint_detail_pills(ui, detail, &p);
     ui.add_space(10.0);
+    paint_detail_pills(ui, detail, &p);
+    ui.add_space(12.0);
     let mut click = paint_detail_actions(ui, detail);
     if !detail.description.is_empty() {
         ui.add_space(10.0);
@@ -4983,7 +5054,9 @@ fn paint_detail_body(
     }
     ui.add_space(10.0);
     paint_detail_facts(ui, detail, &p);
-    if !detail.versions.is_empty() {
+    // Pinning a package another mod pulls in would make it direct; that is not this control.
+    let pinnable = detail.direct || (!detail.installed && !detail.unresolved);
+    if pinnable && !detail.versions.is_empty() && !detail.removing {
         ui.add_space(10.0);
         set_click(&mut click, paint_version_picker(ui, detail, &p));
     }
@@ -5028,36 +5101,29 @@ fn paint_detail_header(ui: &mut Ui, detail: &Detail, p: &Palette) {
     });
 }
 
-fn paint_detail_version(ui: &mut Ui, detail: &Detail, p: &Palette) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        if let Some(version) = &detail.installed_version {
+/// Status and compatibility pills, then the version and any newer one, wrapping as needed.
+fn paint_detail_pills(ui: &mut Ui, detail: &Detail, p: &Palette) {
+    let (label, color) = detail_status(detail, p);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+        widgets::status_pill(ui, &label, color, false);
+        if let Some(note) = &detail.compat {
+            let response = widgets::pill(ui, &note.pill, p.warn, theme::with_alpha(p.warn, 38));
+            let _ = response.on_hover_text(&note.tip);
+        }
+        let version = match &detail.installed_version {
+            Some(version) => format!("{version} installed"),
+            None => detail.catalogue_version.clone(),
+        };
+        if !version.is_empty() {
             ui.label(
-                egui::RichText::new(format!("{version} installed"))
-                    .font(theme::regular(13.0))
-                    .color(p.text_muted),
-            );
-        } else if !detail.catalogue_version.is_empty() {
-            ui.label(
-                egui::RichText::new(&detail.catalogue_version)
+                egui::RichText::new(version)
                     .font(theme::regular(13.0))
                     .color(p.text_muted),
             );
         }
         if let Some(newer) = &detail.newer {
             widgets::pill(ui, &format!("{newer} available"), p.arc, p.arc_tint);
-        }
-    });
-}
-
-fn paint_detail_pills(ui: &mut Ui, detail: &Detail, p: &Palette) {
-    let (label, color) = detail_status(detail, p);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-        widgets::status_pill(ui, &label, color, false);
-        if let Some(note) = &detail.compat {
-            let response = widgets::pill(ui, &note.pill, p.warn, theme::with_alpha(p.warn, 38));
-            let _ = response.on_hover_text(&note.tip);
         }
     });
 }
@@ -5089,37 +5155,38 @@ fn detail_status(detail: &Detail, p: &Palette) -> (String, Color32) {
 fn paint_detail_actions(ui: &mut Ui, detail: &Detail) -> Click {
     let mut click = Click::None;
     let width = ui.available_width();
-    if detail.updating_to.is_some() || detail.pinned.is_some() || detail.removing || detail.adding {
-        if wide_button(ui, "Undo", Variant::Ghost, true, None, width) {
-            click = detail_undo(detail);
-        }
-    } else if !detail.installed && !detail.unresolved {
-        if wide_button(ui, "+ Add", Variant::Secondary, true, None, width) {
-            click = Click::Add(detail.id.clone());
-        }
-    } else if detail.installed && !detail.direct {
-        let tip = remove_block_tip(detail);
-        let _ = wide_button(ui, "Remove", Variant::Danger, false, Some(&tip), width);
-    } else if wide_button(ui, "Remove", Variant::Danger, true, None, width) {
-        click = Click::Remove(detail.id.clone());
-    }
+    // Update sits above Remove: the safe action first, the destructive one last.
     if let Some(newer) = &detail.newer
         && detail.updating_to.is_none()
         && detail.pinned.is_none()
         && !detail.removing
     {
-        ui.add_space(6.0);
         let label = format!("Update to {newer}");
-        if wide_button(
-            ui,
-            &label,
-            Variant::Secondary,
-            true,
-            None,
-            ui.available_width(),
-        ) {
-            set_click(&mut click, Click::Update(detail.id.clone()));
+        if wide_button(ui, &label, Variant::Secondary, true, None, width) {
+            click = Click::Update(detail.id.clone());
         }
+        ui.add_space(6.0);
+    }
+    if detail.updating_to.is_some() || detail.pinned.is_some() || detail.removing || detail.adding {
+        if wide_button(ui, "Undo", Variant::Ghost, true, None, width) {
+            set_click(&mut click, detail_undo(detail));
+        }
+    } else if !detail.installed && !detail.unresolved {
+        if wide_button(ui, "+ Add", Variant::Secondary, true, None, width) {
+            set_click(&mut click, Click::Add(detail.id.clone()));
+        }
+    } else if detail.installed && !detail.direct {
+        let tip = remove_block_tip(detail);
+        let _ = wide_button(ui, "Remove", Variant::Danger, false, Some(&tip), width);
+        ui.add_space(4.0);
+        let p = theme::palette(ui.ctx());
+        ui.label(
+            egui::RichText::new(tip)
+                .font(theme::regular(12.0))
+                .color(p.text_muted),
+        );
+    } else if wide_button(ui, "Remove", Variant::Danger, true, None, width) {
+        set_click(&mut click, Click::Remove(detail.id.clone()));
     }
     click
 }
@@ -5160,7 +5227,23 @@ fn wide_button(
     if let Some(tip) = tip {
         button = button.on_disabled_hover_text(tip);
     }
-    button.show(ui).clicked()
+    let response = button.show(ui);
+    // Full width, a borderless ghost reads as a stray label. Outline it like a field.
+    let p = theme::palette(ui.ctx());
+    let outline = match variant {
+        Variant::Danger if enabled => Some(theme::with_alpha(p.bad, 90)),
+        Variant::Danger | Variant::Ghost => Some(p.line),
+        Variant::Primary | Variant::Secondary | Variant::DangerPrimary => None,
+    };
+    if let Some(color) = outline {
+        ui.painter().rect_stroke(
+            response.rect,
+            8.0,
+            Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.clicked()
 }
 
 fn paint_detail_facts(ui: &mut Ui, detail: &Detail, p: &Palette) {
@@ -5169,8 +5252,10 @@ fn paint_detail_facts(ui: &mut Ui, detail: &Detail, p: &Palette) {
     fact_row(ui, "Licence", &detail.license, p);
     ui.add_space(4.0);
     fact_categories(ui, &detail.categories, p);
-    ui.add_space(4.0);
-    fact_row(ui, "Source", &detail.source, p);
+    if detail.installed {
+        ui.add_space(4.0);
+        fact_row(ui, "Source", &detail.source, p);
+    }
     ui.add_space(4.0);
     fact_row(ui, "Mod API", &detail.mod_api, p);
 }

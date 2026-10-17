@@ -508,6 +508,35 @@ fn mods_details() {
     shot("mods_details", app);
 }
 
+/// Details for a catalogue mod this instance's Mod API cannot take.
+#[test]
+fn mods_details_compat() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.mods_show_browse_for_tests("modded");
+    app.mods_set_search_for_tests("modded", "rail");
+    app.mods_select_for_tests("modded", "pwc.rail-network", false);
+    shot("mods_details_compat", app);
+}
+
+/// Details for an installed mod with a newer catalogue version: Update and the version picker.
+#[test]
+fn mods_details_update() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.mods_select_for_tests("modded", "pwc.backpacks", false);
+    shot("mods_details_update", app);
+}
+
+/// Details for a bundle member: Remove is blocked and says why; "In bundle" links back.
+#[test]
+fn mods_details_member() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.mods_select_for_tests("modded", "pwc.trail-map", false);
+    shot("mods_details_member", app);
+}
+
 #[test]
 fn mods_details_narrow() {
     let mut app = gui::App::for_snapshot_tests();
@@ -516,11 +545,30 @@ fn mods_details_narrow() {
     shot_at("mods_details_narrow", egui::vec2(900.0, 600.0), app);
 }
 
+/// Backpacks shows its ↑ pill; Minimap is staged ("Will update"), so the bar counts one update.
 #[test]
 fn mods_updates() {
     let mut app = gui::App::for_snapshot_tests();
     app.show_instance_mods("modded");
-    shot("mods_updates", app);
+    app.mods_stage_update_for_tests("modded", "pwc.minimap");
+    shot_at("mods_updates", egui::vec2(1280.0, 1120.0), app);
+}
+
+/// "Update all (2)" stages a newest-version relock for both outdated mods.
+#[test]
+fn mods_update_all_stages_both() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.get_by_label("Update all (2)").click();
+    harness.run();
+    let mut staged = harness.state().mods_staged_update_for_tests("modded");
+    staged.sort();
+    assert_eq!(
+        staged,
+        vec!["pwc.backpacks".to_owned(), "pwc.minimap".to_owned()]
+    );
 }
 
 #[test]
@@ -581,4 +629,29 @@ fn mods_escape_clears_selection() {
     harness.key_press(egui::Key::Escape);
     harness.run();
     assert_eq!(harness.state().mods_selected_for_tests("survival"), None);
+}
+
+/// With a mod selected, Enter belongs to the row (details), not to Play.
+#[test]
+fn mods_enter_with_selection_does_not_play() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.mods_select_for_tests("survival", "pwc.essentials", false);
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(!harness.state().has_play_op_for_tests("survival"));
+}
+
+/// Without a selection the Mods tab leaves Enter to Play.
+#[test]
+fn mods_enter_without_selection_plays() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(harness.state().has_play_op_for_tests("survival"));
 }

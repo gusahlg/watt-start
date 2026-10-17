@@ -794,12 +794,10 @@ impl App {
         }
         let typing = ctx.memory(|mem| mem.focused().is_some());
         let popup = egui::Popup::is_any_open(ctx);
-        let on_mods = self.instance_tab == InstanceTab::Mods
-            && matches!(self.main_view, Some(MainView::Instance(_)));
         if !modal_open
             && !typing
             && !popup
-            && !on_mods
+            && !self.mods_claims_enter()
             && let Some(MainView::Instance(name)) = self.main_view.clone()
             && let Some(entry) = self
                 .backend
