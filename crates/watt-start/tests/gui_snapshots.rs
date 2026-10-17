@@ -15,12 +15,21 @@ use egui_kittest::Harness;
 
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 800.0);
 
+/// The harness wraps the UI in a frame with an 8px outer margin; eframe's root `Ui` has none.
+/// Draw over the whole window, like the real app.
+fn full_bleed(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
+    let full = ui.ctx().content_rect();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(full));
+    child.set_clip_rect(full);
+    f(&mut child);
+}
+
 fn shot(name: &str, mut app: gui::App) {
     let mut harness = Harness::builder()
         .with_size(SIZE)
         .with_accessibility_check(false)
         .wgpu()
-        .build_ui(|ui| app.ui(ui));
+        .build_ui(|ui| full_bleed(ui, |ui| app.ui(ui)));
     harness.run_steps(3);
     let image = harness.render().expect("render");
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -151,7 +160,10 @@ fn real_backend() {
         .with_size(SIZE)
         .with_accessibility_check(false)
         .wgpu()
-        .build_ui_state(|ui, app: &mut gui::App| app.ui(ui), app);
+        .build_ui_state(
+            |ui, app: &mut gui::App| full_bleed(ui, |ui| app.ui(ui)),
+            app,
+        );
 
     // The catalog/status scan (and the doctor/startup-check ops) run on background threads;
     // poll with a timeout rather than a fixed sleep, so this finishes as soon as the catalog
@@ -175,4 +187,29 @@ fn real_backend() {
         .join("gui-shots");
     std::fs::create_dir_all(&dir).expect("create target/gui-shots");
     image.save(dir.join("real_backend.png")).expect("save png");
+}
+
+#[test]
+fn widget_gallery() {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_accessibility_check(false)
+        .wgpu()
+        .build_ui(|ui| {
+            gui::theme::apply(ui.ctx(), true, false);
+            ui.painter()
+                .rect_filled(ui.clip_rect(), 0.0, gui::theme::BG_SURFACE);
+            gui::widgets::widget_gallery(ui);
+        });
+    harness.run_steps(3);
+    let image = harness.render().expect("render");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("gui-shots");
+    std::fs::create_dir_all(&dir).expect("create target/gui-shots");
+    image
+        .save(dir.join("widget_gallery.png"))
+        .expect("save png");
 }

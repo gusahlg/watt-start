@@ -128,4 +128,10 @@ pub trait Backend {
 
     /// Open a path in the system file manager, best effort.
     fn open_path(&self, path: &Path);
+
+    /// Whether background jobs are still out (the GUI keeps polling [`Backend::tick`] while
+    /// they are, since their threads cannot wake it).
+    fn loading(&self) -> bool {
+        false
+    }
 }

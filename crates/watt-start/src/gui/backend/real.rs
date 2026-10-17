@@ -174,6 +174,14 @@ impl Backend for RealBackend {
     }
 
     fn refresh(&mut self) {
+        // What an instance can add depends on its source and the settings' repositories, which
+        // ops change: load it again next time it is asked for. Failed branch lists get retried.
+        if self.mods_job.is_none() {
+            self.mods_instance = None;
+        }
+        if matches!(self.branches, Loaded::Err(_)) {
+            self.branches = Loaded::Idle;
+        }
         if self.refresh_job.is_some() {
             return;
         }
@@ -183,7 +191,7 @@ impl Backend for RealBackend {
 
     fn edit_meta(&mut self, instance: &str, edit: MetaEdit) -> Result<Meta, String> {
         let dir = self.paths.instance_dir(instance);
-        meta::update(&dir, |m| {
+        let meta = meta::update(&dir, |m| {
             match edit {
                 MetaEdit::DisplayName(v) => m.display_name = (!v.trim().is_empty()).then_some(v),
                 MetaEdit::Color(v) => m.color = (!v.trim().is_empty()).then_some(v),
@@ -193,7 +201,15 @@ impl Backend for RealBackend {
             }
             Ok(())
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        if let Some(entry) = self
+            .instances
+            .iter_mut()
+            .find(|entry| entry.card.name == instance)
+        {
+            entry.card.meta = meta.clone();
+        }
+        Ok(meta)
     }
 
     fn available_mods(&mut self, instance: &str) -> Loaded<(Vec<AvailableMod>, Vec<String>)> {
@@ -255,6 +271,13 @@ impl Backend for RealBackend {
 
     fn open_path(&self, path: &Path) {
         open_in_file_manager(path);
+    }
+
+    fn loading(&self) -> bool {
+        self.refresh_job.is_some()
+            || self.mods_job.is_some()
+            || self.branches_job.is_some()
+            || self.doctor_job.is_some()
     }
 }
 

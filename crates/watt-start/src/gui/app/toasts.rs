@@ -7,8 +7,21 @@ use super::App;
 /// How long a toast stays up.
 const LIFETIME: Duration = Duration::from_secs(5);
 
+/// What a toast reports: its colour bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastKind {
+    /// Neutral information.
+    Info,
+    /// Something finished.
+    Ok,
+    /// Something failed.
+    Error,
+}
+
 /// One toast.
 pub struct Toast {
+    #[allow(dead_code)] // transitional: drawn by the redesigned toasts
+    pub kind: ToastKind,
     pub message: String,
     pub created: Instant,
 }

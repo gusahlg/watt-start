@@ -15,8 +15,14 @@ impl App {
             ui.label(theme::title("watt-start"));
         });
         ui.add_space(10.0);
+        let search_id = ui.make_persistent_id("sidebar_search");
+        if self.focus_search {
+            self.focus_search = false;
+            ui.memory_mut(|mem| mem.request_focus(search_id));
+        }
         ui.add(
             egui::TextEdit::singleline(&mut self.search)
+                .id(search_id)
                 .hint_text("Search instances")
                 .desired_width(f32::INFINITY),
         );

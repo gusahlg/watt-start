@@ -4,7 +4,8 @@ mod app;
 pub(crate) mod backend;
 pub mod forge;
 pub(crate) mod forge_bridge;
-mod theme;
+pub(crate) mod theme;
+pub(crate) mod widgets;
 
 pub use app::App;
 
