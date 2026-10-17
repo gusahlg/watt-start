@@ -26,8 +26,10 @@ libraries and shares its state: instances made with `pwc` show up here, and the 
 
 ## Install
 
-You need Linux, git, a Vulkan driver, and Rust 1.90 or newer (or Nix). The game, its engine and
-the package manager are downloaded by the launcher itself.
+You need git, a Vulkan-capable GPU driver, and Rust 1.95 or newer (or Nix, on Linux). The game,
+its engine and the package manager are downloaded by the launcher itself. Linux is the tested
+platform. Windows 10/11 builds, but has not been run on a Windows machine yet (see
+[ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ```sh
 git clone https://github.com/gusahlg/pwc-package-manager
@@ -36,6 +38,13 @@ cd watt-start
 cargo install --path crates/watt-start   # or: nix profile add .
 watt-start
 ```
+
+On Windows, install [Git for Windows](https://git-scm.com/download/win) (`winget install Git.Git`)
+and rustup (`winget install Rustlang.Rustup`) with the MSVC toolchain, plus the Visual Studio
+Build Tools workload "Desktop development with C++" (the linker and Windows SDK `rustc` uses).
+The GNU toolchain (`stable-x86_64-pc-windows-gnu`) also type-checks. The game needs a GPU driver
+that provides `vulkan-1.dll`; the launcher window itself uses DirectX 12 when it is available.
+Build with `cargo build --release` from a terminal. There is no installer yet.
 
 The first build of an instance compiles the whole game and takes 15–40 minutes. Later builds
 reuse everything that did not change, and instances on the same game version share their builds.

@@ -54,18 +54,49 @@ resolved to its canonical path once and must not move. The layout is versioned (
 ## Process model
 
 ```text
- GUI (egui)  ──spawn──▶  watt-start op --events json --request '<json>'   (own process group)
+ GUI (egui)  ──spawn──▶  watt-start op --events json --request-stdin     (JSON on stdin)
      ▲                         │  stdout: one JSON envelope per line (events.rs, protocol 1)
-     │  OpView (view.rs)       │  fd 2 captured: git/nix/cargo/rustc output → Log/Progress events
+     │  OpView (view.rs)       │  stderr captured: git/nix/cargo/rustc output → Log/Progress events
      └──────── client.rs ◀─────┘
 ```
 
 Every op runs in a child process. pwc's builder runs Cargo synchronously with its output on
 stderr and without a cancellation hook; a child process gives streaming (the child replaces its own
-fd 2 with a pipe and turns every line into events, Cargo's progress bar into `Progress`, the final
-fat-LTO link into a `Link` phase), cancellation (SIGTERM, then SIGKILL, to the whole process group
-including nix, cargo and rustc) and crash isolation, without changing pwc. The same binary serves
-both sides, so the protocol cannot drift; `watt-start op ...` also works by hand and in scripts.
+stderr with a pipe and turns every line into events, Cargo's progress bar into `Progress`, the final
+fat-LTO link into a `Link` phase), cancellation and crash isolation, without changing pwc. The same
+binary serves both sides, so the protocol cannot drift. `watt-start op --request '<json>'` is the
+form to type by hand; the GUI passes the same JSON on stdin (`--request-stdin`) so a long mod list
+is not a command-line argument.
+
+On Unix the child is its own process group. Cancel sends SIGTERM, waits up to 3 seconds, then
+SIGKILL. The op captures fd 2 with `pipe2` / `dup2`. The GUI never calls `wait` while holding the
+child mutex: `poll` and `running` use `try_lock` and `try_wait`.
+
+On Windows the child is created suspended (`CREATE_SUSPENDED` plus `CREATE_NO_WINDOW`), assigned to
+a job object, and only then resumed. The job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (closing the
+launcher kills cargo and rustc) and `JOB_OBJECT_LIMIT_BREAKAWAY_OK` (the game may leave the job).
+The job handle is not inheritable. `std::process::Command` does not return the primary thread, so
+the suspended process's only thread is found with `CreateToolhelp32Snapshot` / `Thread32First`,
+opened, and resumed with `ResumeThread` after `AssignProcessToJobObject`. There is no console to
+deliver a soft cancel, so cancel calls `TerminateJobObject` immediately and then waits up to 3
+seconds for the leader to exit. Build ops map `build_nice` onto a priority class (0 normal, 1–9
+below normal, 10 and above idle) as a creation flag, so cargo and rustc inherit it; Play stays
+normal. `watt-start build` from a terminal applies the same mapping with `SetPriorityClass`.
+
+The Windows stderr capture is a pipe: `SetStdHandle(STD_ERROR_HANDLE)` plus `_open_osfhandle` /
+`_dup2` onto CRT fd 2, so in-process writes and child processes inherit it. Stdout stays the JSON
+protocol. Those CRT symbols are provided by both the MSVC CRT and MinGW; `cargo check` does not
+link them.
+
+A release build is a Windows GUI-subsystem binary (`windows_subsystem = "windows"`), so opening the
+launcher from Explorer does not create a console. CLI subcommands call `AttachConsole(ATTACH_PARENT_PROCESS)`
+before anything prints, unless stdout is already a handle — the op child is spawned with a piped
+stdout, and attaching would replace the JSON protocol. Every `Command` watt-core itself spawns
+(git, cargo probes, the op child) gets `CREATE_NO_WINDOW` from `process::command`.
+
+The game and its lock guard are started with `CREATE_BREAKAWAY_FROM_JOB`. If the launcher was
+itself placed in a job that disallows breakaway, that create fails; Windows 8 and later nest jobs,
+and a parent job can refuse it. That case is not specially handled.
 
 Read-only views (catalog, status, available mods, doctor) run in the GUI process on background
 threads. Small presentation edits (name, colour, group, notes) are written in-process through
@@ -92,16 +123,32 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   compiling, that `pwc.lock` on disk still matches, failing ("pwc.lock changed while building")
   rather than recording a generation nobody can trust.
 - `game.lock` (`watt-start/game.lock`, inside each instance) is held for exactly as long as a
-  game launched by `Play` runs: acquired before launching, made inheritable
+  game launched by `Play` runs. On Unix it is acquired before launching, made inheritable
   (`FD_CLOEXEC` cleared) and then released by the launcher itself — the detached game's own
   inherited copy of the descriptor is what keeps the `flock` held, following it past the
-  launcher's own exit or a crash. `status::compute`, `Play` and `Remove` (and the world-copying
-  parts of `Update` and `Duplicate`) treat this lock, not `watt-start/game.toml` (which only
-  records the pid/log/started for display), as the truth that a game is running.
+  launcher's own exit or a crash. On Windows `LockFileEx` (what `File::lock` uses) does not
+  travel that way, so Play starts the game with `CREATE_BREAKAWAY_FROM_JOB` and then a small
+  guard, `watt-start op game-guard --pid <pid> --lock <path>`, with
+  `CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS | CREATE_NO_WINDOW`. The guard opens the game
+  process (`OpenProcess(SYNCHRONIZE)`, so a reused pid cannot be confused with it), takes the
+  exclusive lock, writes `ok` to stdout, and blocks on `WaitForSingleObject`. Play waits up to
+  15 seconds for that line; anything else, or a timeout, kills the game and the guard. When the
+  game exits the guard exits and the lock goes with it. `status::compute`, `Play` and `Remove`
+  (and the world-copying parts of `Update` and `Duplicate`) treat this lock, not
+  `watt-start/game.toml` (which only records the pid/log/started for display), as the truth that
+  a game is running. Probing the lock is fail-closed on every platform: a missing file is free,
+  a held lock is held, and an error (the probe could not tell) counts as busy.
 - `Duplicate` builds its copy in a hidden `instances/.tmp-dup-<name>-<pid>` staging directory and
   publishes it with one atomic rename, refusing if the destination already exists; a kill
   partway through leaves only the staging directory, which the next `Duplicate` cleans up.
-- Locks are `flock`s: a killed op releases them.
+- Locks are advisory file locks (`flock` on Unix, `LockFileEx` on Windows): a killed op releases
+  them. Paths that watt-core stores or compares go through `dunce`, so a Windows `\\?\` prefix
+  never enters launcher state. `pwc` itself still canonicalizes with `std::fs::canonicalize`, which
+  on Windows can write `\\?\` into `pwc.lock`; comparisons treat that prefix as the same path.
+  A mod spec with a separator, a leading `.`, or a `.pwcmod` suffix is a path relative to the
+  instance, not the process's working directory. A bare id stays an id even when the instance
+  has a directory of that name (`game/`). On Windows, drive-relative (`C:foo`) and rooted (`\foo`,
+  `/foo`) specs are rejected; `C:\foo` and `\\server\share` are ordinary paths.
 - Every file is written atomically, in an order that is consistent at every point: sources exist
   before anything points at them; `pwc.lock` is written before the binding it was made from (a lock
   newer than its binding is drift, repaired by the next op); a generation is recorded only after
@@ -140,4 +187,15 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   in-process builds; the child process would remain useful for isolation.
 - Mirrors are full clones. The public repositories are small today (tens of MiB together); a
   partial-clone mode would keep the first download small if the history grows.
-- Windows: the op runner's stderr capture and process groups are Unix-only today.
+- Windows is implemented from the platform documentation and type-checks for
+  `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu`. It has not been run on a Windows machine.
+  The pieces most likely to be wrong on a real machine are: assigning the suspended op to its job
+  and resuming the primary thread; the game and the guard actually breaking away (a parent job
+  that disallows breakaway makes `CREATE_BREAKAWAY_FROM_JOB` fail); the guard's `ok` on the stdout
+  pipe; stderr capture via `_open_osfhandle` / `_dup2` on both CRTs (check does not link them);
+  `AttachConsole` for `watt-start list` from cmd.exe; priority-class inheritance into cargo; and
+  `\\?\` paths already stored in `pwc.lock`. Still Unix-only, and not attempted here: copying a
+  directory with open files (an AV lock on a world), case-insensitive duplicate instance names,
+  `PATHEXT`, ACL-aware read-only cleanup beyond the read-only attribute, Ctrl-C / Ctrl-Break as a
+  soft cancel, and the client tests (they are shell scripts and `/proc` checks).
+
