@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use pwc_manifest::{InstanceManifest, InstanceName, VersionReq};
+use pwc_manifest::{
+    InstanceManifest, InstanceName, ModRequirement, ModSource, PackageId, VersionReq,
+};
 use watt_core::catalog::{AvailableMod, GameInfo, InstanceCard, PackageCard};
 use watt_core::doctor::{Check, Level};
 use watt_core::events::{
@@ -92,8 +94,40 @@ fn available(
     }
 }
 
-fn manifest(name: &str) -> InstanceManifest {
-    InstanceManifest::new(InstanceName::parse(name).unwrap(), VersionReq::STAR)
+/// Mods requested in the manifest but absent from the lock. Only the modded fixture has one,
+/// so every other instance keeps an empty manifest.
+fn unresolved_ids(name: &str) -> &'static [&'static str] {
+    match name {
+        "modded" => &["pwc.phantom-relay"],
+        _ => &[],
+    }
+}
+
+fn manifest_for(name: &str, mods: &[PackageCard]) -> InstanceManifest {
+    let mut manifest = InstanceManifest::new(InstanceName::parse(name).unwrap(), VersionReq::STAR);
+    let missing = unresolved_ids(name);
+    if missing.is_empty() {
+        return manifest;
+    }
+    for pkg in mods.iter().filter(|pkg| pkg.direct) {
+        manifest.mods.insert(
+            PackageId::parse(&pkg.id).expect("fixture id"),
+            ModRequirement {
+                version: VersionReq::STAR,
+                source: ModSource::Registry,
+            },
+        );
+    }
+    for id in missing {
+        manifest.mods.insert(
+            PackageId::parse(id).expect("fixture id"),
+            ModRequirement {
+                version: VersionReq::STAR,
+                source: ModSource::Registry,
+            },
+        );
+    }
+    manifest
 }
 
 fn pin(game_ref: &str, seed: &str) -> Pin {
@@ -349,7 +383,428 @@ fn fixtures() -> Vec<Fixture> {
             mods: essentials.clone(),
             updates: None,
         },
+        Fixture {
+            name: "modded",
+            display: Some("Modded"),
+            group: Some("Experiments"),
+            favorite: false,
+            active: false,
+            binding: Binding::Managed {
+                channel: "main".into(),
+                engine_ref: watt_core::meta::AUTO.into(),
+                mods_ref: watt_core::meta::AUTO.into(),
+                pin: Some(pin("main", "modded")),
+            },
+            readiness: Readiness::Ready {
+                game: PathBuf::from("/var/lib/pwc/cache/modded/game"),
+            },
+            running: None,
+            mods: modded_packages(),
+            updates: None,
+        },
     ]
+}
+
+/// The modded instance: two bundles, their members, a handful of dependencies (including
+/// libraries) and one requirement the lock does not have.
+fn modded_packages() -> Vec<PackageCard> {
+    const ROWS: &[InstalledSpec] = &[
+        InstalledSpec::new(
+            "pwc.essentials",
+            "Essentials",
+            "1.4.0",
+            "bundle",
+            "The recommended starter set.",
+            true,
+            &["bundle"],
+            &["Project Watt Cubed contributors"],
+            &["pwc.hotbar", "pwc.waypoints"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.expedition",
+            "Expedition",
+            "0.6.0",
+            "bundle",
+            "Maps, notes and the gear for a long trip.",
+            true,
+            &["bundle", "gameplay"],
+            &["field-lab"],
+            &["pwc.trail-map", "pwc.field-notes"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.ambient-audio",
+            "Ambient Audio",
+            "1.0.0",
+            "mod",
+            "Biome-aware ambient soundscapes.",
+            true,
+            &["audio"],
+            &["lumen"],
+            &["pwc.audio-core"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.backpacks",
+            "Backpacks",
+            "1.2.0",
+            "mod",
+            "Carry a second inventory on your back.",
+            true,
+            &["gameplay"],
+            &["gusahlg"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.better-caves",
+            "Better Caves",
+            "1.2.0",
+            "mod",
+            "Richer cave generation with new biomes.",
+            true,
+            &["worldgen"],
+            &["gusahlg"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.better-lighting",
+            "Better Lighting",
+            "1.1.2",
+            "mod",
+            "Soft sun, tinted torches and light shafts.",
+            true,
+            &["visuals"],
+            &["lumen"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.boats",
+            "Boats",
+            "0.4.0",
+            "mod",
+            "Paddle the rivers and the open water.",
+            true,
+            &["gameplay"],
+            &["gusahlg"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.crop-boost",
+            "Crop Boost",
+            "0.3.1",
+            "mod",
+            "Faster growth when the soil is watered.",
+            true,
+            &["farming"],
+            &["field-lab"],
+            &["pwc.farm-lib"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.deep-ores",
+            "Deep Ores",
+            "0.4.2",
+            "mod",
+            "Richer deposits below the deepslate line.",
+            true,
+            &["worldgen"],
+            &["ore-guild"],
+            &["pwc.geology"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.farming-plus",
+            "Farming Expansion",
+            "0.8.0",
+            "mod",
+            "New crops, irrigation and a seasonal calendar.",
+            true,
+            &["farming"],
+            &["field-lab"],
+            &["pwc.farm-lib"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.inventory-sort",
+            "Inventory Sorting",
+            "0.9.0",
+            "mod",
+            "Stack, sort and pin slots in every container.",
+            true,
+            &["gameplay"],
+            &["gusahlg"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.lanterns",
+            "Lanterns",
+            "0.9.0",
+            "mod",
+            "Placeable lanterns with a warm falloff.",
+            true,
+            &["visuals"],
+            &["lumen"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.minimap",
+            "Minimap",
+            "1.3.0",
+            "mod",
+            "A corner map of the chunks around you.",
+            true,
+            &["interface"],
+            &["mina"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.more-ores",
+            "More Ores",
+            "1.0.0",
+            "mod",
+            "Copper, tin and the alloys the base game left out.",
+            true,
+            &["worldgen"],
+            &["ore-guild"],
+            &["pwc.geology"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.night-vision",
+            "Night Vision",
+            "0.5.0",
+            "mod",
+            "See in the dark without a torch in hand.",
+            true,
+            &["visuals"],
+            &["lumen"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.ore-veins",
+            "Ore Veins",
+            "0.7.0",
+            "mod",
+            "Metals cluster in veins instead of single cubes.",
+            true,
+            &["worldgen"],
+            &["ore-guild"],
+            &["pwc.geology"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.shader-pack",
+            "Shader Pack",
+            "0.8.4",
+            "mod",
+            "Volumetric lighting and soft shadows.",
+            true,
+            &["visuals"],
+            &["lumen"],
+            &["pwc.ui-kit"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.signs-plus",
+            "Signs Plus",
+            "1.0.0",
+            "mod",
+            "Tinted signs with extra lines of text.",
+            true,
+            &["gameplay"],
+            &["mina"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.soundscape",
+            "Field Recordings",
+            "1.0.1",
+            "mod",
+            "Footsteps, weather and caves captured on location.",
+            true,
+            &["audio"],
+            &["lumen"],
+            &["pwc.audio-core"],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.weather-plus",
+            "Weather Plus",
+            "0.5.2",
+            "mod",
+            "Storms, fog banks and seasonal cycles.",
+            true,
+            &["worldgen", "visuals"],
+            &["field-lab"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.hotbar",
+            "Quick Hotbar",
+            "2.1.0",
+            "mod",
+            "A faster, configurable hotbar.",
+            false,
+            &["interface"],
+            &["gusahlg"],
+            &["pwc.ui-kit"],
+            &["pwc.essentials"],
+        ),
+        InstalledSpec::new(
+            "pwc.waypoints",
+            "Waypoints",
+            "1.0.3",
+            "mod",
+            "Place and share waypoints.",
+            false,
+            &["gameplay", "interface"],
+            &["gusahlg"],
+            &[],
+            &["pwc.essentials"],
+        ),
+        InstalledSpec::new(
+            "pwc.trail-map",
+            "Trail Map",
+            "0.6.0",
+            "mod",
+            "Breadcrumbs and named pins along a route.",
+            false,
+            &["interface"],
+            &["field-lab"],
+            &[],
+            &["pwc.expedition"],
+        ),
+        InstalledSpec::new(
+            "pwc.field-notes",
+            "Field Notes",
+            "0.6.0",
+            "mod",
+            "A journal tied to the spot you wrote it.",
+            false,
+            &["gameplay"],
+            &["field-lab"],
+            &[],
+            &["pwc.expedition"],
+        ),
+        InstalledSpec::new(
+            "pwc.geology",
+            "Geology",
+            "1.1.0",
+            "mod",
+            "Shared strata tables the ore mods build on.",
+            false,
+            &["worldgen"],
+            &["ore-guild"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.ui-kit",
+            "UI Kit",
+            "0.9.1",
+            "library",
+            "Shared interface widgets.",
+            false,
+            &["library"],
+            &["gusahlg"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.audio-core",
+            "Audio Core",
+            "0.2.0",
+            "library",
+            "Sample mixer the sound packs share.",
+            false,
+            &["library"],
+            &["lumen"],
+            &[],
+            &[],
+        ),
+        InstalledSpec::new(
+            "pwc.farm-lib",
+            "Farm Lib",
+            "0.3.0",
+            "library",
+            "Soil, moisture and crop stages for farm mods.",
+            false,
+            &["library"],
+            &["field-lab"],
+            &[],
+            &[],
+        ),
+    ];
+    ROWS.iter().copied().map(InstalledSpec::package).collect()
+}
+
+#[derive(Clone, Copy)]
+struct InstalledSpec {
+    id: &'static str,
+    name: &'static str,
+    version: &'static str,
+    kind: &'static str,
+    desc: &'static str,
+    direct: bool,
+    categories: &'static [&'static str],
+    authors: &'static [&'static str],
+    deps: &'static [&'static str],
+    bundles: &'static [&'static str],
+}
+
+impl InstalledSpec {
+    #[allow(clippy::too_many_arguments)]
+    const fn new(
+        id: &'static str,
+        name: &'static str,
+        version: &'static str,
+        kind: &'static str,
+        desc: &'static str,
+        direct: bool,
+        categories: &'static [&'static str],
+        authors: &'static [&'static str],
+        deps: &'static [&'static str],
+        bundles: &'static [&'static str],
+    ) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            kind,
+            desc,
+            direct,
+            categories,
+            authors,
+            deps,
+            bundles,
+        }
+    }
+
+    fn package(self) -> PackageCard {
+        pkg(
+            self.id,
+            self.name,
+            self.version,
+            self.kind,
+            self.desc,
+            self.direct,
+            self.categories,
+            self.authors,
+            self.deps,
+            self.bundles,
+        )
+    }
 }
 
 fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
@@ -392,7 +847,7 @@ fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
     let card = InstanceCard {
         name: f.name.to_owned(),
         dir: PathBuf::from(format!("/var/lib/pwc/instances/{}", f.name)),
-        manifest: manifest(f.name),
+        manifest: manifest_for(f.name, &f.mods),
         meta: meta.clone(),
         lock: None,
         packages: f.mods,
@@ -420,6 +875,327 @@ fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
     InstanceEntry { card, status }
 }
 
+/// Catalogue rows added for the modded instance. Authors are set here so [`available`] keeps
+/// its default byline for the original entries.
+#[allow(clippy::too_many_arguments)]
+fn authored(
+    id: &str,
+    name: &str,
+    version: &str,
+    kind: &str,
+    desc: &str,
+    categories: &[&str],
+    author: &str,
+    deps: &[&str],
+    members: &[&str],
+) -> AvailableMod {
+    let mut entry = available(id, name, version, kind, desc, categories, deps, members);
+    entry.authors = vec![author.to_owned()];
+    entry
+}
+
+fn extra_catalog() -> Vec<AvailableMod> {
+    vec![
+        authored(
+            "pwc.minimap",
+            "Minimap",
+            "1.3.0",
+            "mod",
+            "A corner map of the chunks around you.",
+            &["interface"],
+            "mina",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.inventory-sort",
+            "Inventory Sorting",
+            "0.9.0",
+            "mod",
+            "Stack, sort and pin slots in every container.",
+            &["gameplay"],
+            "gusahlg",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.better-lighting",
+            "Better Lighting",
+            "1.1.2",
+            "mod",
+            "Soft sun, tinted torches and light shafts.",
+            &["visuals"],
+            "lumen",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.farming-plus",
+            "Farming Expansion",
+            "0.8.0",
+            "mod",
+            "New crops, irrigation and a seasonal calendar.",
+            &["farming"],
+            "field-lab",
+            &["pwc.farm-lib"],
+            &[],
+        ),
+        authored(
+            "pwc.more-ores",
+            "More Ores",
+            "1.0.0",
+            "mod",
+            "Copper, tin and the alloys the base game left out.",
+            &["worldgen"],
+            "ore-guild",
+            &["pwc.geology"],
+            &[],
+        ),
+        authored(
+            "pwc.soundscape",
+            "Field Recordings",
+            "1.0.1",
+            "mod",
+            "Footsteps, weather and caves captured on location.",
+            &["audio"],
+            "lumen",
+            &["pwc.audio-core"],
+            &[],
+        ),
+        authored(
+            "pwc.ore-veins",
+            "Ore Veins",
+            "0.7.0",
+            "mod",
+            "Metals cluster in veins instead of single cubes.",
+            &["worldgen"],
+            "ore-guild",
+            &["pwc.geology"],
+            &[],
+        ),
+        authored(
+            "pwc.deep-ores",
+            "Deep Ores",
+            "0.4.2",
+            "mod",
+            "Richer deposits below the deepslate line.",
+            &["worldgen"],
+            "ore-guild",
+            &["pwc.geology"],
+            &[],
+        ),
+        authored(
+            "pwc.geology",
+            "Geology",
+            "1.1.0",
+            "mod",
+            "Shared strata tables the ore mods build on.",
+            &["worldgen"],
+            "ore-guild",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.expedition",
+            "Expedition",
+            "0.6.0",
+            "bundle",
+            "Maps, notes and the gear for a long trip.",
+            &["bundle", "gameplay"],
+            "field-lab",
+            &["pwc.trail-map", "pwc.field-notes"],
+            &["pwc.trail-map", "pwc.field-notes"],
+        ),
+        authored(
+            "pwc.trail-map",
+            "Trail Map",
+            "0.6.0",
+            "mod",
+            "Breadcrumbs and named pins along a route.",
+            &["interface"],
+            "field-lab",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.field-notes",
+            "Field Notes",
+            "0.6.0",
+            "mod",
+            "A journal tied to the spot you wrote it.",
+            &["gameplay"],
+            "field-lab",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.backpacks",
+            "Backpacks",
+            "1.2.0",
+            "mod",
+            "Carry a second inventory on your back.",
+            &["gameplay"],
+            "gusahlg",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.night-vision",
+            "Night Vision",
+            "0.5.0",
+            "mod",
+            "See in the dark without a torch in hand.",
+            &["visuals"],
+            "lumen",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.crop-boost",
+            "Crop Boost",
+            "0.3.1",
+            "mod",
+            "Faster growth when the soil is watered.",
+            &["farming"],
+            "field-lab",
+            &["pwc.farm-lib"],
+            &[],
+        ),
+        authored(
+            "pwc.signs-plus",
+            "Signs Plus",
+            "1.0.0",
+            "mod",
+            "Tinted signs with extra lines of text.",
+            &["gameplay"],
+            "mina",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.lanterns",
+            "Lanterns",
+            "0.9.0",
+            "mod",
+            "Placeable lanterns with a warm falloff.",
+            &["visuals"],
+            "lumen",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.boats",
+            "Boats",
+            "0.4.0",
+            "mod",
+            "Paddle the rivers and the open water.",
+            &["gameplay"],
+            "gusahlg",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.audio-core",
+            "Audio Core",
+            "0.2.0",
+            "library",
+            "Sample mixer the sound packs share.",
+            &["library"],
+            "lumen",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.farm-lib",
+            "Farm Lib",
+            "0.3.0",
+            "library",
+            "Soil, moisture and crop stages for farm mods.",
+            &["library"],
+            "field-lab",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.recipe-book",
+            "Recipe Book",
+            "1.0.0",
+            "mod",
+            "Every alloy and cooking recipe in one book.",
+            &["gameplay"],
+            "mina",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.clouds",
+            "Better Clouds",
+            "0.6.0",
+            "mod",
+            "Layered clouds that drift with the wind.",
+            &["visuals"],
+            "lumen",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.compass",
+            "Compass",
+            "1.0.0",
+            "mod",
+            "A heading marker that finds your last pin.",
+            &["interface"],
+            "mina",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.rivers",
+            "Rivers",
+            "0.5.0",
+            "mod",
+            "Carves riverbeds and fills them from rainfall.",
+            &["worldgen"],
+            "field-lab",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.builder-kit",
+            "Builder Kit",
+            "0.2.0",
+            "bundle",
+            "Chisel and scaffolding for big builds.",
+            &["bundle", "tools"],
+            "kiln",
+            &["pwc.chisel", "pwc.scaffolding"],
+            &["pwc.chisel", "pwc.scaffolding"],
+        ),
+        authored(
+            "pwc.chisel",
+            "Chisel",
+            "0.2.0",
+            "mod",
+            "Cut slopes and detail into solid cubes.",
+            &["tools"],
+            "kiln",
+            &[],
+            &[],
+        ),
+        authored(
+            "pwc.scaffolding",
+            "Scaffolding",
+            "0.2.0",
+            "mod",
+            "Temporary frames that hold you up.",
+            &["tools"],
+            "kiln",
+            &[],
+            &[],
+        ),
+    ]
+}
+
 /// The demo backend.
 pub struct DemoBackend {
     settings: Settings,
@@ -444,7 +1220,7 @@ impl DemoBackend {
             instances.push(build_entry(f, now));
         }
 
-        let mods_catalog = vec![
+        let mut mods_catalog = vec![
             available(
                 "pwc.essentials",
                 "Essentials",
@@ -566,6 +1342,7 @@ impl DemoBackend {
                 &[],
             ),
         ];
+        mods_catalog.extend(extra_catalog());
 
         let doctor = vec![
             Check {
