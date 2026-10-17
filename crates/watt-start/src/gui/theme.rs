@@ -89,6 +89,7 @@ pub const BG_0: Color32 = BG_CANVAS;
 #[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
 pub const BG_1: Color32 = BG_SURFACE;
 /// Old name for [`BG_CARD`].
+#[allow(dead_code)] // transitional: still part of the alias set; no screen reads it yet
 pub const BG_2: Color32 = BG_CARD;
 /// Old name for [`BG_RAISED`].
 pub const BG_3: Color32 = BG_RAISED;
@@ -427,6 +428,7 @@ pub fn title(text: impl Into<String>) -> egui::RichText {
 }
 
 /// Instance title (28 semibold, bright).
+#[allow(dead_code)] // transitional: screens paint palette text so a light theme stays legible
 pub fn heading(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text)
         .font(semibold(28.0))
