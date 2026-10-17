@@ -391,6 +391,13 @@ fn style_elapsed(animate: bool, elapsed_ms: Option<u64>) -> forge::ForgeStyle {
     }
 }
 
+/// egui_kittest's wgpu backend is not safe to drive from several tests at once.
+fn with_gpu<T>(f: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    f()
+}
+
 /// The harness wraps the UI in an 8px frame. Draw over the whole window.
 fn full_bleed(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
     let full = ui.ctx().content_rect();
@@ -406,6 +413,16 @@ fn full_bleed(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui)) {
 /// cube's rotation and the finish-burst age are fully deterministic rather than depending on how
 /// long each step happens to take to render in real wall-clock time.
 fn snapshot(name: &str, view: OpView, style: forge::ForgeStyle, size: egui::Vec2, times: &[f64]) {
+    with_gpu(|| snapshot_inner(name, view, style, size, times));
+}
+
+fn snapshot_inner(
+    name: &str,
+    view: OpView,
+    style: forge::ForgeStyle,
+    size: egui::Vec2,
+    times: &[f64],
+) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/forge-shots");
     std::fs::create_dir_all(dir).expect("create target/forge-shots");
 
@@ -456,29 +473,70 @@ fn compile_about_45_percent() {
 
 #[test]
 fn link_phase() {
+    // t = 0 schedules the voxels and starts the ember clock; t = 1.5 is the photograph.
     let view = linking_view("snap-link");
     snapshot(
         "link",
         view,
         style_elapsed(true, Some(8 * 60_000)),
         CONTENT,
-        STEPS,
+        &[0.0, 1.5],
     );
 }
 
 #[test]
+fn quadrant_boundary() {
+    // First yaw ≡ π/2 crossing: BASE_YAW 0.62, 14 s/turn → t ≈ 2.12 s.
+    // The t = 0 step places voxels before the photograph, so the boundary is metal, not a drop.
+    let style = style_elapsed(true, Some(4 * 60_000 + 12_000));
+    for (name, t) in [
+        ("quadrant_boundary_2_00", 2.00),
+        ("quadrant_boundary_2_12", 2.12),
+        ("quadrant_boundary_2_25", 2.25),
+    ] {
+        snapshot(
+            name,
+            compiling_view("snap-quad", 196, 437),
+            style.clone(),
+            CONTENT,
+            &[0.0, t],
+        );
+    }
+}
+
+#[test]
 fn finished_ok() {
-    // The finish burst starts on the first frame the Ok outcome is seen (t=0.0 here); render a
-    // second frame 250ms later so the spark burst is caught mid-flight.
-    let view = finished_ok_view("snap-ok");
-    snapshot("finished_ok", view, style(true), CONTENT, &[0.0, 0.25]);
+    // A cold start places all 27 voxels from t = 0. 0.25 and 0.60 are the cascade; the shine
+    // is mid-band near 1.43 (last landing + 0.1 + half of 0.6).
+    let style = style(true);
+    snapshot(
+        "finished_ok",
+        finished_ok_view("snap-ok"),
+        style.clone(),
+        CONTENT,
+        &[0.0, 0.25],
+    );
+    snapshot(
+        "finished_ok_0_60",
+        finished_ok_view("snap-ok-060"),
+        style.clone(),
+        CONTENT,
+        &[0.0, 0.60],
+    );
+    snapshot(
+        "finished_ok_sweep",
+        finished_ok_view("snap-ok-sweep"),
+        style,
+        CONTENT,
+        &[0.0, 1.43],
+    );
 }
 
 #[test]
 fn finished_hold() {
-    // Past the 0.8s burst the cube holds in Volt.
+    // Sparks of a full cascade are still fading at 1.8 s; the cube has settled onto a quarter-turn.
     let view = finished_ok_view("snap-hold");
-    snapshot("finished_hold", view, style(true), CONTENT, &[0.0, 1.2]);
+    snapshot("finished_hold", view, style(true), CONTENT, &[0.0, 1.8]);
 }
 
 #[test]
@@ -528,6 +586,10 @@ fn failed_narrow() {
 /// regression in how big the cube renders relative to its box is visible at a glance.
 #[test]
 fn cube_icon_sizes() {
+    with_gpu(cube_icon_sizes_inner);
+}
+
+fn cube_icon_sizes_inner() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/forge-shots");
     std::fs::create_dir_all(dir).expect("create target/forge-shots");
 
@@ -556,6 +618,157 @@ fn cube_icon_sizes() {
     image
         .save(&path)
         .unwrap_or_else(|e| panic!("save {path}: {e}"));
+}
+
+/// Faces toggle only when edge-on, and the painter order stays a far-to-near permutation.
+#[test]
+fn yaw_sweep_faces_only_change_when_edge_on() {
+    use std::f32::consts::TAU;
+    const STEPS: usize = 3600;
+    // A full face is ~0.7; a pop would be well above this. Grazing steps sit under it.
+    const EPS: f32 = 0.05;
+    let centers = forge::rest_centers();
+    let mut prev_masks = [0u8; forge::N_VOXELS];
+    let mut prev_yaw = 0.0f32;
+    for step in 0..=STEPS {
+        let yaw = TAU * (step as f32) / STEPS as f32;
+        let eye = forge::eye_model(forge::FOCAL, yaw, forge::TILT);
+        let order = forge::painter_order(eye, &centers);
+        assert_painter_order(&order, &centers, eye);
+        for k in 0..forge::N_VOXELS {
+            let mask = forge::visible_face_mask(eye, centers[k]);
+            assert!(
+                mask.count_ones() <= 3,
+                "voxel {k} shows {} faces",
+                mask.count_ones()
+            );
+            if step > 0 && mask != prev_masks[k] {
+                let diff = mask ^ prev_masks[k];
+                for face in 0..6 {
+                    if diff & (1 << face) == 0 {
+                        continue;
+                    }
+                    let before = forge::face_projected_area(prev_yaw, centers[k], face);
+                    let after = forge::face_projected_area(yaw, centers[k], face);
+                    assert!(
+                        before < EPS && after < EPS,
+                        "voxel {k} face {face} popped at yaw {yaw}: area {before} -> {after}"
+                    );
+                }
+            }
+            prev_masks[k] = mask;
+        }
+        prev_yaw = yaw;
+    }
+
+    let mut dropped = centers;
+    dropped[13][1] += 1.2;
+    let eye = forge::eye_model(forge::FOCAL, 0.9, forge::TILT);
+    assert_painter_order(&forge::painter_order(eye, &dropped), &dropped, eye);
+
+    let center = centers
+        .iter()
+        .position(|c| *c == [0.0, 0.0, 0.0])
+        .expect("centre voxel");
+    for face in 0..6 {
+        assert!(
+            !forge::is_hull_face(center, face),
+            "centre face {face} is interior"
+        );
+    }
+    let hulls = (0..6).filter(|&face| forge::is_hull_face(0, face)).count();
+    assert_eq!(hulls, 3, "a corner voxel shows three hull faces");
+}
+
+fn assert_painter_order(
+    order: &[usize; forge::N_VOXELS],
+    centers: &[[f32; 3]; forge::N_VOXELS],
+    eye: [f32; 3],
+) {
+    let mut seen = [false; forge::N_VOXELS];
+    let mut prev_key = f32::INFINITY;
+    let mut prev_index = 0usize;
+    for (n, &k) in order.iter().enumerate() {
+        assert!(
+            k < forge::N_VOXELS && !seen[k],
+            "order is not a permutation"
+        );
+        seen[k] = true;
+        let c = centers[k];
+        let key = (c[0] - eye[0]).abs() + (c[1] - eye[1]).abs() + (c[2] - eye[2]).abs();
+        if n > 0 {
+            assert!(
+                key < prev_key || (key == prev_key && k > prev_index),
+                "painter key rose or a tie broke toward a lower index"
+            );
+        }
+        prev_key = key;
+        prev_index = k;
+    }
+}
+
+/// Times 1000 full forge frames, plus 1000 cube tessellations.
+/// Ignored: it is a measurement, not a pass/fail check.
+/// The pre-rewrite full frame (layout + shapes, no tessellation, debug) was 111.0 µs.
+#[test]
+#[ignore]
+fn time_thousand_forge_frames() {
+    let view = compiling_view("bench-forge", 196, 437);
+    let style = style_elapsed(true, Some(4 * 60_000 + 12_000));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(CONTENT)
+        .with_accessibility_check(false)
+        .build_ui(move |ui| {
+            full_bleed(ui, |ui| {
+                gui::theme::apply(ui.ctx(), true, true);
+                let _ = forge::forge(ui, &view, &style);
+            });
+        });
+    for i in 0..30 {
+        harness.input_mut().time = Some(i as f64 * 0.016);
+        harness.step();
+    }
+    let start = std::time::Instant::now();
+    for i in 0..1000 {
+        harness.input_mut().time = Some(1.0 + i as f64 * 0.016);
+        harness.step();
+    }
+    let us = start.elapsed().as_secs_f64() * 1_000_000.0 / 1000.0;
+    eprintln!("forge frame (layout+shapes, no tessellation): {us:.1} µs");
+
+    let mut tess = egui::epaint::Tessellator::new(
+        1.0,
+        egui::epaint::TessellationOptions::default(),
+        [256, 256],
+        Vec::new(),
+    );
+    let sample = forge::cube_shapes_for_bench(0.9, 32.0, egui::pos2(200.0, 150.0));
+    for _ in 0..10 {
+        let mut mesh = egui::epaint::Mesh::default();
+        for shape in sample.clone() {
+            tess.tessellate_shape(shape, &mut mesh);
+        }
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        let mut mesh = egui::epaint::Mesh::default();
+        for shape in sample.clone() {
+            tess.tessellate_shape(shape, &mut mesh);
+        }
+        std::hint::black_box(&mesh);
+    }
+    let tess_us = start.elapsed().as_secs_f64() * 1_000_000.0 / 1000.0;
+    let start = std::time::Instant::now();
+    for i in 0..1000 {
+        let yaw = i as f32 * 0.01;
+        std::hint::black_box(forge::cube_shapes_for_bench(
+            yaw,
+            32.0,
+            egui::pos2(200.0, 150.0),
+        ));
+    }
+    let build_us = start.elapsed().as_secs_f64() * 1_000_000.0 / 1000.0;
+    eprintln!("cube shape build: {build_us:.1} µs; tessellate placed cube: {tess_us:.1} µs");
 }
 
 /// The window icon is a cube: square RGBA, transparent corners, opaque pixels in the middle.
