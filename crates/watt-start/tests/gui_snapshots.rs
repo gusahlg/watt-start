@@ -213,3 +213,64 @@ fn widget_gallery() {
         .save(dir.join("widget_gallery.png"))
         .expect("save png");
 }
+
+// ---- shell ----
+
+fn shot_at(name: &str, size: egui::Vec2, mut app: gui::App) {
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .with_accessibility_check(false)
+        .wgpu()
+        .build_ui(|ui| full_bleed(ui, |ui| app.ui(ui)));
+    harness.run_steps(3);
+    let image = harness.render().expect("render");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("gui-shots");
+    std::fs::create_dir_all(&dir).expect("create target/gui-shots");
+    image
+        .save(dir.join(format!("{name}.png")))
+        .expect("save png");
+}
+
+#[test]
+fn instance_settings_tab() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_settings("survival");
+    shot("instance_settings_tab", app);
+}
+
+#[test]
+fn instance_log_tab() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_log("survival");
+    shot("instance_log_tab", app);
+}
+
+#[test]
+fn sidebar_pending_create() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.start_op_for_tests(
+        "brand-new",
+        watt_core::ops::OpRequest::Create {
+            name: "brand-new".into(),
+            display_name: Some("Brand New".into()),
+            color: None,
+            group: None,
+            source: watt_core::ops::SourceSpec::PwcDefault,
+            mods: Vec::new(),
+            build: false,
+        },
+    );
+    app.show_instance_overview("brand-new");
+    shot("sidebar_pending_create", app);
+}
+
+#[test]
+fn instance_overview_small() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_overview("survival");
+    shot_at("instance_overview_small", egui::vec2(900.0, 600.0), app);
+}

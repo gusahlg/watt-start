@@ -9,6 +9,9 @@ use super::forge::{ForgeResponse, ForgeStyle};
 
 /// The two forge entry points used outside `forge.rs` itself.
 pub(crate) struct ForgeBridge {
+    /// Old isometric cube. The shell paints [`crate::gui::widgets::cube`] instead (no busy
+    /// crackle). Kept so a swapped forge can still supply the previous entry point.
+    #[allow(dead_code)]
     pub cube_icon: fn(&mut egui::Ui, f32, egui::Color32, bool) -> egui::Response,
     pub forge: fn(&mut egui::Ui, &OpView, &ForgeStyle) -> ForgeResponse,
 }

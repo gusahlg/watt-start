@@ -206,6 +206,8 @@ pub struct App {
     pub(crate) display_name_draft: HashMap<String, String>,
     /// In-progress sidebar group, keyed by instance directory name.
     pub(crate) group_draft: HashMap<String, String>,
+    /// Log tails and which instance was last on screen (drafts commit when it changes).
+    pub(crate) instance_ui: instance_tabs::InstanceUiState,
     pub(crate) toasted_load_errors: std::collections::HashSet<String>,
 }
 
@@ -245,6 +247,7 @@ impl App {
             notes_draft: HashMap::new(),
             display_name_draft: HashMap::new(),
             group_draft: HashMap::new(),
+            instance_ui: instance_tabs::InstanceUiState::default(),
             toasted_load_errors: std::collections::HashSet::new(),
         };
         app.sync_updates_from_backend();
@@ -401,22 +404,28 @@ impl App {
         self.poll_startup_check();
         self.handle_shortcuts(ui.ctx());
 
-        if self.backend.loading() {
+        if self.backend.loading() || self.startup_check.is_some() {
             // Background jobs don't wake egui; poll them while they run, animations or not.
+            // The startup check also drives the brand spinner.
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        if self.backend.instances().is_empty() && self.new_instance.is_none() && self.ops.is_empty()
-        {
-            self.welcome_screen(ui);
+        let no_catalog = self.backend.instances().is_empty() && self.ops.is_empty();
+        let settings_open = matches!(self.main_view, Some(MainView::Settings));
+        if no_catalog && self.new_instance.is_none() && !settings_open {
+            if self.backend.loading() {
+                self.catalog_loading(ui);
+            } else {
+                self.welcome_screen(ui);
+            }
         } else {
             let palette = theme::palette(ui.ctx());
             Panel::left("sidebar")
                 .exact_size(260.0)
                 .resizable(false)
                 .frame(egui::Frame::new().fill(palette.bg_sidebar).inner_margin(0))
-                .show_separator_line(true)
+                .show_separator_line(false)
                 .show(ui, |ui| self.sidebar(ui));
             CentralPanel::default()
                 .frame(egui::Frame::new().fill(palette.bg_surface).inner_margin(0))
@@ -430,6 +439,8 @@ impl App {
     }
 
     fn main_area(&mut self, ui: &mut egui::Ui) {
+        // Before the panels draw, so Ctrl+, (handled above) still commits the instance we left.
+        self.note_view_changed();
         match self.main_view.clone() {
             Some(MainView::Settings) => self.settings_page(ui),
             // An instance being created or duplicated has an op but no catalog entry yet.
@@ -442,7 +453,12 @@ impl App {
             _ => {
                 ui.vertical_centered(|ui| {
                     ui.add_space(80.0);
-                    ui.label(theme::subheading("Pick an instance from the sidebar"));
+                    let p = theme::palette(ui.ctx());
+                    ui.label(
+                        egui::RichText::new("Pick an instance from the sidebar")
+                            .font(theme::semibold(15.0))
+                            .color(p.text_muted),
+                    );
                 });
             }
         }
