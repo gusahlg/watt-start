@@ -134,6 +134,7 @@ fn mods_add_remove_relocks_and_restores_on_failure() {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec!["pwc.hotbar".to_owned()],
+        update: vec![],
         build: Some(false),
     });
     assert_ok(&outcome);
@@ -146,6 +147,7 @@ fn mods_add_remove_relocks_and_restores_on_failure() {
         instance: "survival".to_owned(),
         add: vec!["nope.nope".to_owned()],
         remove: vec![],
+        update: vec![],
         build: Some(false),
     });
     assert_failed(&outcome);
@@ -287,6 +289,7 @@ fn rollback_restores_the_previous_generations_lock() {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec![],
+        update: vec![],
         build: Some(true),
     });
     assert_ok(&outcome);
@@ -473,6 +476,7 @@ fn status_is_needs_build_after_a_mod_change() {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec![],
+        update: vec![],
         build: Some(false),
     });
     assert_ok(&outcome);
@@ -751,6 +755,7 @@ fn rollback_relocks_when_a_generations_package_is_missing_from_the_store() {
                 instance: "survival".to_owned(),
                 add: vec!["pwc.inventory".to_owned()],
                 remove: vec!["pwc.hotbar".to_owned()],
+                update: vec![],
                 build: Some(true),
             })
             .0,
@@ -804,6 +809,7 @@ fn build_fails_when_pwc_lock_changed_underneath_it() {
                 instance: "survival".to_owned(),
                 add: vec!["pwc.inventory".to_owned()],
                 remove: vec![],
+                update: vec![],
                 build: Some(false),
             })
             .0,
@@ -827,4 +833,41 @@ fn build_fails_when_pwc_lock_changed_underneath_it() {
         format!("{err:#}").contains("pwc.lock changed while building"),
         "{err:#}"
     );
+}
+
+/// `Mods.update` is the set `LockOptions` prefers newest for. A sibling package stays pinned.
+#[test]
+fn mods_update_bumps_only_the_named_package() {
+    let world = World::new();
+    world.add_package("pwc.hotbar", "1.0.0", &[]);
+    world.add_package("pwc.inventory", "1.0.0", &[]);
+    assert_ok(&create(
+        &world,
+        "survival",
+        SourceSpec::PwcDefault,
+        &["pwc.hotbar", "pwc.inventory"],
+        false,
+    ));
+    world.add_package("pwc.hotbar", "1.1.0", &[]);
+    world.add_package("pwc.inventory", "1.1.0", &[]);
+
+    let (outcome, _sink) = world.run(&OpRequest::Mods {
+        instance: "survival".to_owned(),
+        add: vec![],
+        remove: vec![],
+        update: vec!["pwc.hotbar".to_owned()],
+        build: Some(false),
+    });
+    assert_ok(&outcome);
+    let card = catalog::load_instance(&world.paths, "survival").unwrap();
+    let version = |id: &str| {
+        card.packages
+            .iter()
+            .find(|pkg| pkg.id == id)
+            .map(|pkg| pkg.version.as_str())
+            .unwrap_or("missing")
+            .to_owned()
+    };
+    assert_eq!(version("pwc.hotbar"), "1.1.0");
+    assert_eq!(version("pwc.inventory"), "1.0.0");
 }

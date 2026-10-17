@@ -1,5 +1,7 @@
 //! The `Mods` op: add/remove mod requirements, relock, rebuild.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context as _, bail};
 use pwc_instance::LockOptions;
 use pwc_manifest::PackageId;
@@ -21,6 +23,7 @@ pub(super) fn run(
         instance: name,
         add,
         remove,
+        update,
         build,
     } = request
     else {
@@ -50,11 +53,19 @@ pub(super) fn run(
         .context("cannot resolve the instance's sources")?;
 
     reporter.phase(Phase::Lock, false);
+    let mut update_ids = BTreeSet::new();
+    for id in update {
+        update_ids
+            .insert(PackageId::parse(id).with_context(|| format!("`{id}` is not a package id"))?);
+    }
     let lock_report = match crate::build::lock(
         paths,
         &instance,
         &resolved,
-        &LockOptions::default(),
+        &LockOptions {
+            update: update_ids,
+            ..LockOptions::default()
+        },
         reporter,
     ) {
         Ok(report) => report,
