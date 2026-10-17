@@ -12,6 +12,7 @@
 mod gui;
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 800.0);
 
@@ -369,4 +370,110 @@ fn settings_page_small() {
     let mut app = gui::App::for_snapshot_tests();
     app.show_settings();
     shot_at("settings_page_small", egui::vec2(900.0, 600.0), app);
+}
+
+// ---- fixes ----
+
+fn app_harness(app: gui::App) -> Harness<'static, gui::App> {
+    Harness::builder()
+        .with_size(SIZE)
+        .with_accessibility_check(false)
+        .wgpu()
+        .build_ui_state(
+            |ui, app: &mut gui::App| full_bleed(ui, |ui| app.ui(ui)),
+            app,
+        )
+}
+
+fn click_at(harness: &Harness<'_, gui::App>, pos: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+}
+
+/// Backdrop press used to bury the dialog card under the dim layer. A control inside still works.
+#[test]
+fn new_instance_backdrop_then_choice() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_new_instance_dialog();
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    click_at(&harness, egui::pos2(16.0, 16.0));
+    harness.run();
+    assert!(
+        harness.state().new_instance_open_for_tests(),
+        "backdrop click closed the new instance dialog"
+    );
+    harness.get_by_label("My game checkout").click();
+    harness.run();
+    assert_eq!(
+        harness.state().new_instance_source_kind_for_tests(),
+        "linked"
+    );
+}
+
+/// The title is a label on top of the card. Clicking it selects the card.
+#[test]
+fn choice_card_title_selects() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.open_new_instance_dialog();
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.get_by_label("My game checkout").click();
+    harness.run();
+    assert_eq!(
+        harness.state().new_instance_source_kind_for_tests(),
+        "linked"
+    );
+}
+
+/// Enter follows the same check as the Play button. A broken instance stays put.
+#[test]
+fn enter_does_not_play_broken() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_overview("flaky-build");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(!harness.state().has_play_op_for_tests("flaky-build"));
+}
+
+/// The same key does launch a ready instance, so the broken case is not a dead shortcut.
+#[test]
+fn enter_plays_ready() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_overview("survival");
+    let mut harness = app_harness(app);
+    harness.run_steps(3);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(harness.state().has_play_op_for_tests("survival"));
+}
+
+#[test]
+fn overview_900_scale_150() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_overview("survival");
+    app.set_scale_for_tests(1.5);
+    shot_at("overview_900_scale_150", egui::vec2(900.0, 600.0), app);
+}
+
+#[test]
+fn mods_pending_900_scale_150() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.stage_mod_add_for_tests("survival", "pwc.better-caves");
+    app.set_scale_for_tests(1.5);
+    shot_at("mods_pending_900_scale_150", egui::vec2(900.0, 600.0), app);
 }
