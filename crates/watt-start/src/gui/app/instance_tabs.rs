@@ -811,7 +811,12 @@ impl App {
         let text = map
             .entry(name.to_owned())
             .or_insert_with(|| seed.to_owned());
-        let response = widgets::text_input(ui, text, hint, f32::INFINITY);
+        let salt = match draft {
+            Draft::DisplayName => "display-name",
+            Draft::Group => "group",
+            Draft::Notes => "notes",
+        };
+        let response = widgets::text_input_with_id(ui, (salt, name), text, hint, f32::INFINITY);
         response.lost_focus()
             || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
     }

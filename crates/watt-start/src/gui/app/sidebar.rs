@@ -124,8 +124,9 @@ impl App {
                 .max_rect(field)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        let response = widgets::search_input(
+        let response = widgets::search_input_with_id(
             &mut search_ui,
+            "sidebar-search",
             &mut self.search,
             "Search instances",
             field.width(),
@@ -217,6 +218,7 @@ impl App {
         let mut pending: Vec<_> = self
             .ops
             .iter()
+            .filter(|(_, slot)| matches!(slot.kind(), OpKind::Create | OpKind::Duplicate))
             .filter(|(key, _)| {
                 self.backend
                     .instances()
@@ -502,17 +504,11 @@ fn count_pill_width(ui: &egui::Ui, count: usize) -> f32 {
 }
 
 fn live_dot(ui: &mut egui::Ui, color: egui::Color32, diameter: f32) {
+    // A running game must not request a repaint. The dot stays a steady arc mark;
+    // the catalog refresh in `App::ui` is what clears "Running" after the game exits.
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(diameter), egui::Sense::hover());
-    let mut paint = color;
-    if theme::anim_secs(ui.ctx(), 1.0) > 0.0 {
-        let t = ui.input(|i| i.time) as f32;
-        let phase = (t * std::f32::consts::TAU / 1.6).sin();
-        let wobble = 0.55 + 0.45 * (0.5 + 0.5 * phase);
-        paint = color.gamma_multiply(wobble);
-        ui.ctx().request_repaint();
-    }
     ui.painter()
-        .circle_filled(rect.center(), diameter * 0.5, paint);
+        .circle_filled(rect.center(), diameter * 0.5, color);
 }
 
 fn group_heading(ui: &mut egui::Ui, text: &str) {

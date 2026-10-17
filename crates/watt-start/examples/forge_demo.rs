@@ -447,6 +447,8 @@ impl Demo {
                 expected_ms: Some(11 * 60_000),
                 title: "Survival".to_owned(),
                 elapsed_ms: None,
+                ready: true,
+                retry_only: false,
             },
         };
         demo.start_scenario(now);

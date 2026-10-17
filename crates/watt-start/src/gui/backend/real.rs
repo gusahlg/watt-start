@@ -56,6 +56,8 @@ pub struct RealBackend {
     load_errors: Vec<(String, String)>,
     updates: BTreeMap<String, Vec<RepoLog>>,
     refresh_job: Option<Job<CatalogResult>>,
+    /// `refresh` was asked for while a scan was already running. Start another when it lands.
+    refresh_again: bool,
     mods_instance: Option<String>,
     mods: Loaded<(Vec<AvailableMod>, Vec<String>)>,
     mods_job: Option<Job<ModsResult>>,
@@ -78,6 +80,7 @@ impl RealBackend {
             load_errors: Vec::new(),
             updates: BTreeMap::new(),
             refresh_job: None,
+            refresh_again: false,
             mods_instance: None,
             mods: Loaded::Idle,
             mods_job: None,
@@ -130,6 +133,9 @@ impl Backend for RealBackend {
                 Err(e) => self.load_errors.push(("catalog".to_owned(), e)),
             }
             changed = true;
+            if self.refresh_again {
+                self.refresh();
+            }
         }
         if let Some(job) = &self.mods_job
             && let Some(result) = job.poll()
@@ -183,8 +189,10 @@ impl Backend for RealBackend {
             self.branches = Loaded::Idle;
         }
         if self.refresh_job.is_some() {
+            self.refresh_again = true;
             return;
         }
+        self.refresh_again = false;
         let paths = self.paths.clone();
         self.refresh_job = Some(Job::spawn(move || load_catalog(&paths)));
     }

@@ -23,6 +23,9 @@ const PAD_X: f32 = 12.0;
 const ICON_PX: f32 = 24.0;
 const MEMBER_INDENT: f32 = 28.0;
 const BAR_H: f32 = 56.0;
+/// Text above the buttons, used when the one-row bar would clip Discard.
+const BAR_H_STACKED: f32 = 96.0;
+const BAR_STACK_BREAK: f32 = 480.0;
 const BAR_GAP: f32 = 8.0;
 const TOOLBAR_WRAP: f32 = 720.0;
 /// Name column: the 24px glyph, the 12px row pad, and the gap before the text.
@@ -53,6 +56,11 @@ struct InstanceModsUi {
     show_libraries: bool,
     expanded: HashSet<String>,
     deps_expanded: bool,
+    /// Bundles the user collapsed while a filter was forcing them open. Beats that force
+    /// until the filter changes.
+    collapsed: HashSet<String>,
+    /// Same override for the Dependencies group.
+    deps_collapsed: bool,
 }
 
 impl InstanceModsUi {
@@ -64,6 +72,8 @@ impl InstanceModsUi {
             show_libraries: false,
             expanded: HashSet::new(),
             deps_expanded: false,
+            collapsed: HashSet::new(),
+            deps_collapsed: false,
         }
     }
 }
@@ -166,6 +176,8 @@ struct MemberRow {
 struct DirectRow {
     pkg: PackageCard,
     open: bool,
+    /// Open because a filter or a removal forced it, not because the user expanded it.
+    forced: bool,
     members: Vec<MemberRow>,
     member_total: usize,
     removing: bool,
@@ -174,6 +186,7 @@ struct DirectRow {
 struct DepGroup {
     count: usize,
     open: bool,
+    forced: bool,
     rows: Vec<MemberRow>,
 }
 
@@ -447,8 +460,15 @@ fn paint_tab(
     bar: &BarOpts<'_>,
 ) -> Click {
     let full = ui.available_rect_before_wrap();
+    let stacked = full.width() < BAR_STACK_BREAK;
     let bar_id = Id::unique(("mods-pending-h", entry.card.name.as_str()));
-    let target = if staged.is_empty() { 0.0 } else { BAR_H };
+    let target = if staged.is_empty() {
+        0.0
+    } else if stacked {
+        BAR_H_STACKED
+    } else {
+        BAR_H
+    };
     let bar_h = ui
         .ctx()
         .animate_value_with_time(bar_id, target, theme::anim_secs(ui.ctx(), 0.15));
@@ -467,12 +487,21 @@ fn paint_tab(
         view.category.clone(),
         view.show_libraries,
     );
-    paint_toolbar(ui, view, &categories, installed_n, browse_n);
+    paint_toolbar(
+        ui,
+        view,
+        &entry.card.name,
+        &categories,
+        installed_n,
+        browse_n,
+    );
     let extra = (12.0 - ui.spacing().item_spacing.y).max(0.0);
     if extra > 0.0 {
         ui.add_space(extra);
     }
     if view.search != before.0 || view.category != before.1 || view.show_libraries != before.2 {
+        view.collapsed.clear();
+        view.deps_collapsed = false;
         installed = build_installed(entry, catalog, view, staged);
         browse = build_browse(entry, catalog, view, staged);
     }
@@ -491,7 +520,7 @@ fn paint_tab(
         let bar_rect = Rect::from_min_max(pos2(full.left(), full.bottom() - bar_h), full.max);
         set_click(
             &mut click,
-            paint_pending(ui, bar_rect, staged, bar.hint, bar.busy, bar.wait),
+            paint_pending(ui, bar_rect, staged, bar.hint, bar.busy, bar.wait, stacked),
         );
     }
     click
@@ -500,6 +529,7 @@ fn paint_tab(
 fn paint_toolbar(
     ui: &mut Ui,
     view: &mut InstanceModsUi,
+    instance: &str,
     categories: &[String],
     installed_n: usize,
     browse_n: Option<usize>,
@@ -516,12 +546,24 @@ fn paint_toolbar(
         view.segment = segment;
         if wide {
             let search_w = (ui.available_width() - 312.0).max(80.0);
-            widgets::search_input(ui, &mut view.search, "Search mods", search_w);
+            widgets::search_input_with_id(
+                ui,
+                ("mods-search", instance),
+                &mut view.search,
+                "Search mods",
+                search_w,
+            );
             category_box(ui, view, categories);
             libraries_toggle(ui, &mut view.show_libraries);
         } else {
             let search_w = ui.available_width().max(40.0);
-            widgets::search_input(ui, &mut view.search, "Search mods", search_w);
+            widgets::search_input_with_id(
+                ui,
+                ("mods-search", instance),
+                &mut view.search,
+                "Search mods",
+                search_w,
+            );
         }
     });
     if !wide {
@@ -655,7 +697,11 @@ fn paint_installed(
                 ui.add_space(12.0);
             }
             if deps_header(ui, model.deps.open, model.deps.count, &p) {
-                view.deps_expanded = !view.deps_expanded;
+                if model.deps.forced {
+                    view.deps_collapsed = !view.deps_collapsed;
+                } else {
+                    view.deps_expanded = !view.deps_expanded;
+                }
             }
             with_reveal(ui, reveal_id(instance, "deps"), model.deps.open, |ui| {
                 for row in &model.deps.rows {
@@ -691,7 +737,11 @@ fn paint_direct(
 ) {
     let hit = paint_direct_row(ui, row, p);
     if matches!(hit, RowHit::Body | RowHit::Members) {
-        toggle_expand(&mut view.expanded, &row.pkg.id);
+        if row.forced {
+            toggle_expand(&mut view.collapsed, &row.pkg.id);
+        } else {
+            toggle_expand(&mut view.expanded, &row.pkg.id);
+        }
     }
     set_click(click, hit_click(hit, &row.pkg.id, false));
     if row.pkg.kind == "bundle" && row.member_total > 0 {
@@ -980,11 +1030,16 @@ fn plan_direct(
     }
     let user_open = view.expanded.contains(&pkg.id);
     let forced = kid_removing || (filter.active() && kid_hit);
-    let open = user_open || forced;
+    let open = if forced {
+        !view.collapsed.contains(&pkg.id)
+    } else {
+        user_open
+    };
     let members = shown_members(kids, open, user_open, filter, staged);
     Some(DirectRow {
         pkg,
         open,
+        forced,
         members,
         member_total: visible_kids,
         removing,
@@ -1044,7 +1099,12 @@ fn plan_deps(
             removing,
         });
     }
-    let open = view.deps_expanded || any_removing || any_hit;
+    let forced = any_removing || any_hit;
+    let open = if forced {
+        !view.deps_collapsed
+    } else {
+        view.deps_expanded
+    };
     let count = listed.len();
     if !open {
         listed.clear();
@@ -1052,6 +1112,7 @@ fn plan_deps(
     DepGroup {
         count,
         open,
+        forced,
         rows: listed,
     }
 }
@@ -2023,6 +2084,7 @@ fn paint_pending(
     hint: &str,
     busy: bool,
     wait: &str,
+    stacked: bool,
 ) -> Click {
     let p = theme::palette(ui.ctx());
     ui.painter().rect(
@@ -2032,6 +2094,21 @@ fn paint_pending(
         Stroke::new(1.0, p.line),
         egui::StrokeKind::Inside,
     );
+    let actions_rect = if stacked {
+        let split = rect.top() + rect.height() * 0.46;
+        paint_pending_text(
+            ui,
+            rect.left() + 16.0,
+            rect.right() - 16.0,
+            Rect::from_min_max(rect.min, pos2(rect.right(), split)),
+            staged,
+            hint,
+            &p,
+        );
+        Rect::from_min_max(pos2(rect.left(), split), rect.max)
+    } else {
+        rect
+    };
     let mut bar = ui.new_child(
         UiBuilder::new()
             .max_rect(rect)
@@ -2040,7 +2117,7 @@ fn paint_pending(
     bar.set_clip_rect(rect);
     let mut right = bar.new_child(
         UiBuilder::new()
-            .max_rect(rect)
+            .max_rect(actions_rect)
             .layout(Layout::right_to_left(Align::Center))
             .id_salt("pending-actions"),
     );
@@ -2065,7 +2142,7 @@ fn paint_pending(
         .show(&mut right);
     let text_right = apply_response.rect.left().min(discard.rect.left()) - 12.0;
     let text_left = rect.left() + 16.0;
-    if text_right > text_left + 24.0 && rect.height() > 32.0 {
+    if !stacked && text_right > text_left + 24.0 && rect.height() > 32.0 {
         paint_pending_text(&bar, text_left, text_right, rect, staged, hint, &p);
     }
     if apply_response.clicked() {

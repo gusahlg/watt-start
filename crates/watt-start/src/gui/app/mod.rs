@@ -11,9 +11,9 @@ mod sidebar;
 mod toasts;
 mod welcome;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use egui::{CentralPanel, Panel};
 use watt_core::events::{Change, OpKind, OpOutcome, RepoLog};
@@ -41,14 +41,6 @@ impl ModPreset {
                 vec!["pwc.essentials".to_owned(), "pwc.dev-toolkit".to_owned()]
             }
             ModPreset::Vanilla => Vec::new(),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            ModPreset::Essentials => "Essentials",
-            ModPreset::EssentialsDevToolkit => "Essentials + Developer Toolkit",
-            ModPreset::Vanilla => "Vanilla (no mods)",
         }
     }
 }
@@ -140,6 +132,8 @@ pub(crate) struct OpSlot {
     pub request: OpRequest,
     /// When it started. A local clock: `view.t_ms` only moves when an event arrives.
     pub started: Instant,
+    /// When the outcome arrived. Elapsed time stops here instead of keeping counting.
+    pub settled_at: Option<Instant>,
     /// Settlement has been handled.
     pub settled: bool,
     /// What to call it before its instance is in the catalog (Create, Duplicate).
@@ -191,6 +185,17 @@ pub(crate) enum ConfirmAction {
     Maintenance(OpRequest),
 }
 
+/// The startup "check every instance" op, and how much of its report has been applied.
+///
+/// Changes are consumed once. An update that clears a badge while the check is still running
+/// is recorded in `cleared` so a later frame of the same report cannot put the badge back.
+pub(crate) struct StartupCheck {
+    op: RunningOp,
+    view: OpView,
+    processed: usize,
+    cleared: HashSet<String>,
+}
+
 /// The launcher application. A single [`App::ui`] call draws everything for the current state.
 pub struct App {
     pub(crate) backend: Box<dyn Backend>,
@@ -205,7 +210,12 @@ pub struct App {
     pub(crate) ops: HashMap<String, OpSlot>,
     pub(crate) staged_mods: HashMap<String, StagedMods>,
     pub(crate) updates: HashMap<String, Vec<RepoLog>>,
-    pub(crate) startup_check: Option<(RunningOp, OpView)>,
+    pub(crate) startup_check: Option<StartupCheck>,
+    /// Zoom this app last applied or adopted. `None` until the first frame, so the saved
+    /// scale wins over egui's default of 1.0.
+    zoom_applied: Option<f32>,
+    /// When the catalog was last refreshed because a game or an external op was live.
+    last_live_refresh: Option<Instant>,
 
     pub(crate) new_instance: Option<new_instance::NewInstanceState>,
     pub(crate) change_source: Option<new_instance::ChangeSourceState>,
@@ -254,6 +264,8 @@ impl App {
             staged_mods: HashMap::new(),
             updates: HashMap::new(),
             startup_check: None,
+            zoom_applied: None,
+            last_live_refresh: None,
             new_instance: None,
             change_source: None,
             confirm: None,
@@ -272,7 +284,12 @@ impl App {
             let op = app
                 .backend
                 .start_op(OpRequest::CheckUpdates { instance: None });
-            app.startup_check = Some((op, OpView::default()));
+            app.startup_check = Some(StartupCheck {
+                op,
+                view: OpView::default(),
+                processed: 0,
+                cleared: HashSet::new(),
+            });
         }
         app.ensure_selection();
         app
@@ -352,6 +369,37 @@ impl App {
     }
 
     #[allow(dead_code)]
+    /// Test/screenshot helper: set the UI scale without going through the slider.
+    pub(crate) fn set_scale_for_tests(&mut self, scale: f32) {
+        self.settings_draft.appearance.scale = scale;
+    }
+
+    #[allow(dead_code)]
+    /// Test helper: `"managed"`, `"linked"`, `"pwc"`, or `"closed"` for the New instance dialog.
+    pub(crate) fn new_instance_source_kind_for_tests(&self) -> &'static str {
+        match self.new_instance.as_ref().map(|state| &state.source) {
+            Some(SourceChoice::Managed { .. }) => "managed",
+            Some(SourceChoice::Linked { .. }) => "linked",
+            Some(SourceChoice::PwcDefault) => "pwc",
+            None => "closed",
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Test helper: the New instance dialog is open.
+    pub(crate) fn new_instance_open_for_tests(&self) -> bool {
+        self.new_instance.is_some()
+    }
+
+    #[allow(dead_code)]
+    /// Test helper: a Play op is tracked for `instance` (running or settled).
+    pub(crate) fn has_play_op_for_tests(&self, instance: &str) -> bool {
+        self.ops
+            .get(instance)
+            .is_some_and(|slot| slot.kind() == OpKind::Play)
+    }
+
+    #[allow(dead_code)]
     /// Test/screenshot helper: show the Settings page.
     pub(crate) fn show_settings(&mut self) {
         self.main_view = Some(MainView::Settings);
@@ -403,10 +451,7 @@ impl App {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        let scale = self.settings_draft.appearance.scale.max(0.5);
-        if (ui.ctx().zoom_factor() - scale).abs() > 0.001 {
-            ui.ctx().set_zoom_factor(scale);
-        }
+        self.sync_zoom(ui.ctx());
         theme::apply(
             ui.ctx(),
             self.settings_draft.appearance.dark,
@@ -419,6 +464,7 @@ impl App {
         }
         self.poll_ops(ui.ctx());
         self.poll_startup_check();
+        self.refresh_live_status(ui.ctx());
         self.handle_shortcuts(ui.ctx());
 
         if self.backend.loading() || self.startup_check.is_some() {
@@ -428,7 +474,7 @@ impl App {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        let no_catalog = self.backend.instances().is_empty() && self.ops.is_empty();
+        let no_catalog = self.backend.instances().is_empty() && !self.has_live_instance_op();
         let settings_open = matches!(self.main_view, Some(MainView::Settings));
         if no_catalog && self.new_instance.is_none() && !settings_open {
             if self.backend.loading() {
@@ -438,8 +484,9 @@ impl App {
             }
         } else {
             let palette = theme::palette(ui.ctx());
+            let sidebar_w = (ui.ctx().content_rect().width() * 0.28).clamp(200.0, 260.0);
             Panel::left("sidebar")
-                .exact_size(260.0)
+                .exact_size(sidebar_w)
                 .resizable(false)
                 .frame(egui::Frame::new().fill(palette.bg_sidebar).inner_margin(0))
                 .show_separator_line(false)
@@ -493,6 +540,7 @@ impl App {
                 any_running = true;
             } else if !slot.settled {
                 slot.settled = true;
+                slot.settled_at = Some(Instant::now());
                 to_settle.push(name.clone());
             }
         }
@@ -550,6 +598,20 @@ impl App {
         }
 
         let looking_at = matches!(&self.main_view, Some(MainView::Instance(n)) if n == key);
+        // A removed instance has nothing left to show. Drop the slot (the toast is the record)
+        // so an empty catalog can return to the welcome screen.
+        if succeeded && matches!(request, OpRequest::Remove { .. }) {
+            self.toast_kind(
+                toasts::ToastKind::Ok,
+                format!("{title}: {} finished", op_noun(kind)),
+            );
+            self.ops.remove(key);
+            if looking_at {
+                self.main_view = None;
+                self.ensure_selection();
+            }
+            return;
+        }
         if looking_at && !hidden {
             return;
         }
@@ -596,6 +658,11 @@ impl App {
         for instance in cleared {
             if !reported.contains(&instance) {
                 self.updates.remove(&instance);
+                if let Some(check) = self.startup_check.as_mut()
+                    && check.view.running()
+                {
+                    check.cleared.insert(instance);
+                }
             }
         }
     }
@@ -610,47 +677,135 @@ impl App {
     }
 
     fn poll_startup_check(&mut self) {
-        if let Some((op, view)) = &mut self.startup_check {
-            op.poll(view);
-            for change in &view.changes {
-                if let Change::UpdatesAvailable {
-                    instance,
-                    whats_new,
-                } = change
-                {
-                    self.updates.insert(instance.clone(), whats_new.clone());
-                }
+        let (fresh, done) = {
+            let Some(check) = self.startup_check.as_mut() else {
+                return;
+            };
+            check.op.poll(&mut check.view);
+            let start = check.processed.min(check.view.changes.len());
+            let fresh: Vec<(String, Vec<RepoLog>)> = check.view.changes[start..]
+                .iter()
+                .filter_map(|change| match change {
+                    Change::UpdatesAvailable {
+                        instance,
+                        whats_new,
+                    } if !check.cleared.contains(instance) => {
+                        Some((instance.clone(), whats_new.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            check.processed = check.view.changes.len();
+            let done = !check.view.running();
+            (fresh, done)
+        };
+        for (instance, whats_new) in fresh {
+            self.updates.insert(instance, whats_new);
+        }
+        if done {
+            self.startup_check = None;
+        }
+    }
+
+    /// Adopt egui's own Ctrl+/- zoom, and apply the slider once a drag has been committed.
+    ///
+    /// `set_zoom_factor` does not change [`egui::Context::zoom_factor`] until the end of the
+    /// pass, so `zoom_applied` is what distinguishes "we just set it" from a key the user pressed.
+    fn sync_zoom(&mut self, ctx: &egui::Context) {
+        let setting = self.settings_draft.appearance.scale;
+        let zoom = ctx.zoom_factor();
+        match self.zoom_applied {
+            None => {
+                ctx.set_zoom_factor(setting.max(0.5));
+                self.zoom_applied = Some(setting);
             }
-            if !view.running() {
-                self.startup_check = None;
+            Some(applied) => {
+                let external = (zoom - applied).abs() > 0.001 && (zoom - setting).abs() > 0.001;
+                if external {
+                    let clamped = (zoom.clamp(0.75, 1.75) * 20.0).round() / 20.0;
+                    self.settings_draft.appearance.scale = clamped;
+                    self.zoom_applied = Some(clamped);
+                    if (clamped - zoom).abs() > 0.001 {
+                        ctx.set_zoom_factor(clamped);
+                    }
+                    self.backend.save_settings(self.settings_draft.clone());
+                } else if (setting - zoom).abs() > 0.001 {
+                    ctx.set_zoom_factor(setting.max(0.5));
+                    self.zoom_applied = Some(setting);
+                }
             }
         }
     }
 
+    /// While a game is running, or pwc holds an instance, rescan every few seconds so Play
+    /// leaves "Running" after the process exits. Idle repaint is scheduled; nothing spins.
+    fn refresh_live_status(&mut self, ctx: &egui::Context) {
+        let live = self
+            .backend
+            .instances()
+            .iter()
+            .any(|entry| entry.status.running.is_some() || entry.status.busy);
+        if !live {
+            self.last_live_refresh = None;
+            return;
+        }
+        let due = self
+            .last_live_refresh
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(3));
+        if due {
+            self.backend.refresh();
+            self.last_live_refresh = Some(Instant::now());
+        }
+        ctx.request_repaint_after(Duration::from_secs(3));
+    }
+
+    fn modal_open(&self) -> bool {
+        self.new_instance.is_some()
+            || self.change_source.is_some()
+            || self.duplicate.is_some()
+            || self.confirm.is_some()
+    }
+
+    /// A Create/Duplicate (or any other instance op) that has not settled yet. Settled results
+    /// and launcher maintenance do not keep the welcome screen away.
+    fn has_live_instance_op(&self) -> bool {
+        self.ops.iter().any(|(key, slot)| {
+            !slot.settled
+                && key.as_str() != dialogs::MAINTENANCE_KEY
+                && slot.kind() != OpKind::Maintenance
+        })
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
+        let modal_open = self.modal_open();
+        if !modal_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::N)) {
             self.open_new_instance_dialog();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
+        if !modal_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma)) {
             self.main_view = Some(MainView::Settings);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             self.backend.refresh();
         }
-        let modal_open = self.new_instance.is_some()
-            || self.change_source.is_some()
-            || self.duplicate.is_some()
-            || self.confirm.is_some();
         let typing = ctx.memory(|mem| mem.focused().is_some());
+        let popup = egui::Popup::is_any_open(ctx);
         if !modal_open
             && !typing
-            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            && !popup
             && let Some(MainView::Instance(name)) = self.main_view.clone()
+            && let Some(entry) = self
+                .backend
+                .instances()
+                .iter()
+                .find(|entry| entry.card.name == name)
+                .cloned()
+            && self.play_block_reason(&entry).is_none()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
         {
             self.play(&name, false);
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+        if !modal_open && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.focus_search = true;
         }
     }
@@ -701,6 +856,7 @@ impl App {
                 display_name: Some(d),
                 ..
             } if !d.trim().is_empty() => d.clone(),
+            OpRequest::Maintenance { .. } => "Maintenance".to_owned(),
             _ => self.instance_title(&key),
         };
         let op = self.backend.start_op(request.clone());
@@ -712,6 +868,7 @@ impl App {
                 hidden: false,
                 request,
                 started: Instant::now(),
+                settled_at: None,
                 settled: false,
                 title,
             },
@@ -761,10 +918,17 @@ impl App {
             return;
         };
         if slot.running() {
+            let message = format!(
+                "Wait for the {} of {} to finish first",
+                op_noun(slot.kind()),
+                slot.title
+            );
+            self.toast(message);
             return;
         }
         let request = slot.request.clone();
-        self.ops.remove(key);
+        // Leave the failed slot in place. `start_op` overwrites it on success and, if another
+        // running op holds the instance, toasts and returns without inserting.
         self.start_op(key, request);
     }
 
@@ -783,6 +947,15 @@ impl App {
     /// others replace the settled result with a new op.
     pub(crate) fn apply_recovery(&mut self, key: &str, recovery: watt_core::events::Recovery) {
         use watt_core::events::Recovery;
+        // A duplicate's request names the source. Roll back / rebuild would hit that original.
+        if self
+            .ops
+            .get(key)
+            .is_some_and(|slot| slot.kind() == OpKind::Duplicate)
+            && !matches!(recovery, Recovery::Retry)
+        {
+            return;
+        }
         let instance = self
             .ops
             .get(key)

@@ -32,6 +32,11 @@ pub struct ForgeStyle {
     /// Milliseconds since the op started, from the GUI's own clock (`view.t_ms` only moves when
     /// an event arrives, so it stalls during a quiet link). `None`: use `view.t_ms`.
     pub elapsed_ms: Option<u64>,
+    /// The catalog says this instance can launch. False while it still needs a build, and for
+    /// an instance that is not in the catalog yet.
+    pub ready: bool,
+    /// A failed Duplicate only offers Retry. Roll back and rebuild would hit the source instance.
+    pub retry_only: bool,
 }
 
 /// What the user pressed in the forge this frame.
@@ -45,8 +50,10 @@ pub struct ForgeResponse {
     pub close: bool,
     /// A recovery button after a failure.
     pub recovery: Option<Recovery>,
-    /// "Play" after a successful build/update.
+    /// "Play" after a successful build/update that left the instance ready.
     pub play: bool,
+    /// "Build now" after a success that still needs a build.
+    pub build: bool,
 }
 
 /// Max width of the status column under the cube.
@@ -168,7 +175,7 @@ pub fn forge(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
                             draw_stepper(ui, view, style, now);
                         }
                         ui.add_space(layout.before_buttons);
-                        response = draw_buttons(ui, view);
+                        response = draw_buttons(ui, view, style);
                         ui.add_space(layout.before_log);
                         draw_log(ui, view, failed);
                     });
@@ -787,10 +794,9 @@ fn draw_status_block(ui: &mut Ui, view: &OpView, style: &ForgeStyle, tight: bool
 
     match &view.outcome {
         Some(OpOutcome::Ok { summary }) => {
-            let play = offers_play(view.op);
             centered_line(
                 ui,
-                &ready_headline(&style.title, play),
+                &success_headline(view, style),
                 theme::semibold(20.0),
                 p.text_bright,
             );
@@ -1012,6 +1018,17 @@ fn action_headline(op: Option<OpKind>) -> &'static str {
         Some(OpKind::Maintenance) => "Cleaning up",
         None => "Working",
     }
+}
+
+fn success_headline(view: &OpView, style: &ForgeStyle) -> String {
+    let play = offers_play(view.op);
+    if play && style.ready {
+        return ready_headline(&style.title, true);
+    }
+    if play && !style.ready && matches!(view.op, Some(OpKind::Mods)) {
+        return "Mods applied — build needed".to_owned();
+    }
+    "Done".to_owned()
 }
 
 fn ready_headline(title: &str, play: bool) -> String {
@@ -1357,11 +1374,12 @@ enum ButtonKind {
     Hide,
     Play,
     Close,
+    Build,
     Recovery(Recovery),
 }
 
-fn draw_buttons(ui: &mut Ui, view: &OpView) -> ForgeResponse {
-    let buttons = button_row(view);
+fn draw_buttons(ui: &mut Ui, view: &OpView, style: &ForgeStyle) -> ForgeResponse {
+    let buttons = button_row(view, style);
     let gap = 8.0;
     let widths: Vec<f32> = buttons.iter().map(|b| button_width(ui, b.label)).collect();
     let avail = ui.available_width();
@@ -1383,22 +1401,37 @@ fn draw_buttons(ui: &mut Ui, view: &OpView) -> ForgeResponse {
             }
             for &i in indices {
                 let button = &buttons[i];
-                let clicked = Button::new(button.label)
-                    .variant(button.variant)
-                    .size(Size::Medium)
-                    .min_width(96.0)
-                    .show(ui)
-                    .clicked();
-                if clicked {
-                    apply_button(&mut response, &button.kind);
-                }
+                // A fresh id per kind. Positional ids survive the outcome change, so a Cancel
+                // pressed as the op finishes can release onto Play.
+                ui.push_id(button_salt(&button.kind), |ui| {
+                    let clicked = Button::new(button.label)
+                        .variant(button.variant)
+                        .size(Size::Medium)
+                        .min_width(96.0)
+                        .show(ui)
+                        .clicked();
+                    if clicked {
+                        apply_button(&mut response, &button.kind);
+                    }
+                });
             }
         });
     }
     response
 }
 
-fn button_row(view: &OpView) -> Vec<ForgeButton> {
+fn button_salt(kind: &ButtonKind) -> String {
+    match kind {
+        ButtonKind::Cancel => "cancel".to_owned(),
+        ButtonKind::Hide => "hide".to_owned(),
+        ButtonKind::Play => "play".to_owned(),
+        ButtonKind::Close => "close".to_owned(),
+        ButtonKind::Build => "build".to_owned(),
+        ButtonKind::Recovery(recovery) => format!("recovery-{}", recovery_label(*recovery)),
+    }
+}
+
+fn button_row(view: &OpView, style: &ForgeStyle) -> Vec<ForgeButton> {
     match &view.outcome {
         None => vec![
             ForgeButton {
@@ -1412,11 +1445,23 @@ fn button_row(view: &OpView) -> Vec<ForgeButton> {
                 kind: ButtonKind::Hide,
             },
         ],
-        Some(OpOutcome::Ok { .. }) if offers_play(view.op) => vec![
+        Some(OpOutcome::Ok { .. }) if offers_play(view.op) && style.ready => vec![
             ForgeButton {
                 label: "Play",
                 variant: Variant::Primary,
                 kind: ButtonKind::Play,
+            },
+            ForgeButton {
+                label: "Close",
+                variant: Variant::Secondary,
+                kind: ButtonKind::Close,
+            },
+        ],
+        Some(OpOutcome::Ok { .. }) if offers_play(view.op) => vec![
+            ForgeButton {
+                label: "Build now",
+                variant: Variant::Primary,
+                kind: ButtonKind::Build,
             },
             ForgeButton {
                 label: "Close",
@@ -1435,8 +1480,13 @@ fn button_row(view: &OpView) -> Vec<ForgeButton> {
             kind: ButtonKind::Close,
         }],
         Some(OpOutcome::Failed { recovery, .. }) => {
-            let mut row = Vec::with_capacity(recovery.len() + 1);
-            for (i, recovery) in recovery.iter().enumerate() {
+            let offered: Vec<Recovery> = recovery
+                .iter()
+                .copied()
+                .filter(|item| !style.retry_only || matches!(item, Recovery::Retry))
+                .collect();
+            let mut row = Vec::with_capacity(offered.len() + 1);
+            for (i, recovery) in offered.iter().enumerate() {
                 row.push(ForgeButton {
                     label: recovery_label(*recovery),
                     variant: if i == 0 {
@@ -1463,6 +1513,7 @@ fn apply_button(response: &mut ForgeResponse, kind: &ButtonKind) {
         ButtonKind::Hide => response.hide = true,
         ButtonKind::Play => response.play = true,
         ButtonKind::Close => response.close = true,
+        ButtonKind::Build => response.build = true,
         ButtonKind::Recovery(recovery) => response.recovery = Some(*recovery),
     }
 }

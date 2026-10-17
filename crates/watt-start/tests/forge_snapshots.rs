@@ -386,6 +386,8 @@ fn style_elapsed(animate: bool, elapsed_ms: Option<u64>) -> forge::ForgeStyle {
         expected_ms: Some(11 * 60_000),
         title: "Survival".to_owned(),
         elapsed_ms,
+        ready: true,
+        retry_only: false,
     }
 }
 

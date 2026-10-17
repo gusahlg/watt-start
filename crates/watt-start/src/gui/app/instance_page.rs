@@ -88,7 +88,8 @@ impl App {
         let (pill, pill_color, pulse) = self.header_pill(ui, name, entry);
         let pill_w = pill_width(ui, &pill);
         let text_left = cube.right() + 14.0;
-        let text_w = (rect.right() - text_left).max(40.0);
+        let reserve = self.hidden_chip_width(ui, name, entry.is_some());
+        let text_w = (rect.right() - reserve - text_left).max(40.0);
         let title_font = theme::semibold(28.0);
         let meta_font = theme::regular(12.0);
         let title_h = ui
@@ -141,6 +142,11 @@ impl App {
             p.text,
             text_w,
         );
+        if reserve > 0.0 {
+            let chip =
+                egui::Rect::from_min_max(egui::pos2(rect.right() - reserve, rect.top()), rect.max);
+            self.paint_hidden_chip(ui, chip, name);
+        }
     }
 
     fn header_actions(
@@ -151,12 +157,16 @@ impl App {
         entry: Option<&InstanceEntry>,
     ) {
         if let Some(key) = self.running_key(name) {
-            self.progress_capsule(ui, rect, &key);
+            // Hide/Show only toggles the slot this page is showing. On a duplicate's source
+            // the running key is the copy, and the button would change a forge that isn't here.
+            self.progress_capsule(ui, rect, &key, key == name);
             return;
         }
-        if let Some(slot) = self.ops.get(name)
-            && (!slot.running())
-            && (slot.hidden || entry.is_none())
+        // A hidden settled op on a real instance keeps the action row; the chip on row 1
+        // carries Show and dismiss. A pending instance has no actions, so the line stays.
+        if entry.is_none()
+            && let Some(slot) = self.ops.get(name)
+            && !slot.running()
         {
             let phrase = outcome_phrase(slot.kind(), slot.view.outcome.as_ref());
             let show = slot.hidden;
@@ -181,13 +191,6 @@ impl App {
         let game = entry.card.dir.join("game");
         let logs = entry.card.dir.join("watt-start").join("logs");
 
-        let mut row = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        row.spacing_mut().item_spacing.x = 8.0;
-
         let mut play = Button::new(play_label)
             .variant(Variant::Primary)
             .size(Size::Large)
@@ -195,10 +198,6 @@ impl App {
         if let Some(reason) = &play_reason {
             play = play.enabled(false).on_disabled_hover_text(reason);
         }
-        if play.show(&mut row).clicked() {
-            self.play(&name, false);
-        }
-
         let mut update = Button::new("Update")
             .variant(Variant::Secondary)
             .size(Size::Medium)
@@ -208,47 +207,86 @@ impl App {
         if commits > 0 {
             update = update.badge(commits);
         }
-        if update.show(&mut row).clicked() {
-            self.start_op(
-                name.clone(),
-                OpRequest::Update {
-                    instance: name.clone(),
-                    build: None,
-                    reset_lock: false,
-                },
-            );
-        }
-
-        if Button::new("Recompile")
+        let recompile = Button::new("Recompile")
             .variant(Variant::Secondary)
             .size(Size::Medium)
             .min_width(110.0)
             .enabled(!external)
-            .on_disabled_hover_text("Busy in pwc")
-            .show(&mut row)
-            .clicked()
-        {
-            self.start_op(
-                name.clone(),
-                OpRequest::Build {
-                    instance: name.clone(),
-                    force: true,
-                    profile: None,
-                },
-            );
+            .on_disabled_hover_text("Busy in pwc");
+
+        // Play and the kebab stay. Update drops after Recompile when the row is narrower
+        // than the buttons (high scale, or a short window).
+        let gap = 8.0;
+        let kebab_w = 36.0;
+        let play_w = play.outer_width(ui);
+        let update_w = update.outer_width(ui);
+        let recompile_w = recompile.outer_width(ui);
+        let base = play_w + gap + kebab_w;
+        let mut show_recompile = true;
+        let mut show_update = true;
+        if base + gap + update_w + gap + recompile_w > rect.width() {
+            show_recompile = false;
+            if base + gap + update_w > rect.width() {
+                show_update = false;
+            }
+        }
+
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = gap;
+
+        if play.show(&mut row).clicked() {
+            self.play(&name, false);
+        }
+        if show_update && update.show(&mut row).clicked() {
+            self.start_update(&name);
+        }
+        if show_recompile && recompile.show(&mut row).clicked() {
+            self.start_recompile(&name);
         }
 
         let rest = row.available_width();
-        if rest > 36.0 {
-            row.add_space(rest - 36.0);
+        if rest > kebab_w {
+            row.add_space(rest - kebab_w);
         }
         let kebab = widgets::icon_button(&mut row, Icon::Kebab, Variant::Secondary, 36.0, "More");
+        let folded = FoldedActions {
+            update: !show_update,
+            recompile: !show_recompile,
+            busy: external,
+            commits,
+        };
         egui::Popup::menu(&kebab)
             .gap(4.0)
             .align(egui::RectAlign::BOTTOM_END)
             .show(|ui| {
-                self.instance_menu(ui, &name, &game, &logs);
+                self.instance_menu(ui, &name, &game, &logs, folded);
             });
+    }
+
+    fn start_update(&mut self, name: &str) {
+        self.start_op(
+            name.to_owned(),
+            OpRequest::Update {
+                instance: name.to_owned(),
+                build: None,
+                reset_lock: false,
+            },
+        );
+    }
+
+    fn start_recompile(&mut self, name: &str) {
+        self.start_op(
+            name.to_owned(),
+            OpRequest::Build {
+                instance: name.to_owned(),
+                force: true,
+                profile: None,
+            },
+        );
     }
 
     fn instance_menu(
@@ -257,8 +295,22 @@ impl App {
         name: &str,
         game: &std::path::Path,
         logs: &std::path::Path,
+        folded: FoldedActions,
     ) {
         let p = theme::palette(ui.ctx());
+        if folded.update {
+            let label = if folded.commits > 0 {
+                format!("Update ({})", folded.commits)
+            } else {
+                "Update".to_owned()
+            };
+            if menu_item_enabled(ui, &label, p.text, !folded.busy) {
+                self.start_update(name);
+            }
+        }
+        if folded.recompile && menu_item_enabled(ui, "Recompile", p.text, !folded.busy) {
+            self.start_recompile(name);
+        }
         if menu_item(ui, "Open game folder", p.text) {
             self.backend.open_path(game);
         }
@@ -280,7 +332,13 @@ impl App {
         }
     }
 
-    fn progress_capsule(&mut self, ui: &mut egui::Ui, rect: egui::Rect, key: &str) {
+    fn progress_capsule(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        key: &str,
+        toggle_forge: bool,
+    ) {
         let Some((phase, fraction, hidden)) = self
             .ops
             .get(key)
@@ -299,10 +357,12 @@ impl App {
         );
         row.spacing_mut().item_spacing.x = 8.0;
 
-        let hide = Button::new(hide_label)
-            .variant(Variant::Secondary)
-            .size(Size::Medium)
-            .show(&mut row);
+        let hide = toggle_forge.then(|| {
+            Button::new(hide_label)
+                .variant(Variant::Secondary)
+                .size(Size::Medium)
+                .show(&mut row)
+        });
         let cancel = Button::new("Cancel")
             .variant(Variant::Danger)
             .size(Size::Medium)
@@ -345,7 +405,7 @@ impl App {
         {
             slot.op.cancel();
         }
-        if hide.clicked()
+        if hide.is_some_and(|response| response.clicked())
             && let Some(slot) = self.ops.get_mut(key)
         {
             slot.hidden = !slot.hidden;
@@ -492,7 +552,10 @@ impl App {
                 animate: self.settings_draft.appearance.animations,
                 expected_ms,
                 title,
-                elapsed_ms: Some(slot.started.elapsed().as_millis() as u64),
+                elapsed_ms: Some(forge_elapsed_ms(slot)),
+                ready: entry
+                    .is_some_and(|entry| matches!(entry.status.readiness, Readiness::Ready { .. })),
+                retry_only: slot.kind() == OpKind::Duplicate,
             },
         })
     }
@@ -514,6 +577,17 @@ impl App {
         if response.play {
             self.dismiss_page_op(name);
             self.play(name, false);
+        }
+        if response.build {
+            // Replaces the settled slot. Dismissing first would drop a pending instance's page.
+            self.start_op(
+                name,
+                OpRequest::Build {
+                    instance: name.to_owned(),
+                    force: false,
+                    profile: None,
+                },
+            );
         }
         if let Some(recovery) = response.recovery {
             self.apply_recovery(name, recovery);
@@ -588,7 +662,8 @@ impl App {
             return (label, p.volt, false);
         }
         if entry.status.running.is_some() {
-            return ("Running".to_owned(), p.arc, true);
+            // Steady dot. A pulse would repaint the window for as long as the game runs.
+            return ("Running".to_owned(), p.arc, false);
         }
         match &entry.status.readiness {
             Readiness::Ready { .. } => ("Ready".to_owned(), p.ok, false),
@@ -598,7 +673,65 @@ impl App {
         }
     }
 
-    fn play_block_reason(&self, entry: &InstanceEntry) -> Option<String> {
+    /// Width reserved on the title row for a hidden settled op's Show / dismiss chip.
+    fn hidden_chip_width(&self, ui: &egui::Ui, name: &str, has_entry: bool) -> f32 {
+        if !has_entry || !self.settled_hidden(name) {
+            return 0.0;
+        }
+        let show_w = Button::new("Show")
+            .variant(Variant::Ghost)
+            .size(Size::Small)
+            .outer_width(ui);
+        8.0 + 120.0 + 8.0 + show_w + 8.0 + 28.0
+    }
+
+    fn settled_hidden(&self, name: &str) -> bool {
+        self.ops
+            .get(name)
+            .is_some_and(|slot| !slot.running() && slot.hidden)
+    }
+
+    fn paint_hidden_chip(&mut self, ui: &mut egui::Ui, rect: egui::Rect, name: &str) {
+        let Some(phrase) = self.ops.get(name).and_then(|slot| {
+            (!slot.running() && slot.hidden)
+                .then(|| outcome_phrase(slot.kind(), slot.view.outcome.as_ref()))
+        }) else {
+            return;
+        };
+        let color = outcome_color(ui.ctx(), &phrase);
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = 8.0;
+        let dismiss =
+            widgets::icon_button(&mut row, Icon::Cross, Variant::Ghost, 28.0, "Dismiss").clicked();
+        let reveal = Button::new("Show")
+            .variant(Variant::Ghost)
+            .size(Size::Small)
+            .show(&mut row)
+            .clicked();
+        let text_w = row.available_width().clamp(24.0, 120.0);
+        let (text_rect, _) =
+            row.allocate_exact_size(egui::vec2(text_w, 24.0), egui::Sense::hover());
+        paint_ellipsis(
+            row.painter(),
+            egui::pos2(text_rect.left(), text_rect.center().y - 8.0),
+            &phrase,
+            theme::semibold(12.0),
+            color,
+            text_w,
+        );
+        if reveal && let Some(slot) = self.ops.get_mut(name) {
+            slot.hidden = false;
+        }
+        if dismiss {
+            self.dismiss_page_op(name);
+        }
+    }
+
+    pub(super) fn play_block_reason(&self, entry: &InstanceEntry) -> Option<String> {
         if let Some(reason) = self.action_block_reason(entry) {
             return Some(reason);
         }
@@ -612,6 +745,22 @@ impl App {
 struct PreparedForge {
     view: watt_core::view::OpView,
     style: ForgeStyle,
+}
+
+/// Actions that did not fit the header row and move into the kebab menu.
+#[derive(Clone, Copy)]
+struct FoldedActions {
+    update: bool,
+    recompile: bool,
+    busy: bool,
+    commits: usize,
+}
+
+fn forge_elapsed_ms(slot: &OpSlot) -> u64 {
+    match slot.settled_at {
+        Some(at) => at.saturating_duration_since(slot.started).as_millis() as u64,
+        None => slot.started.elapsed().as_millis() as u64,
+    }
 }
 
 fn paint_header_card(
@@ -838,4 +987,15 @@ fn menu_item(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> bool {
         ui.close();
     }
     clicked
+}
+
+fn menu_item_enabled(ui: &mut egui::Ui, label: &str, color: egui::Color32, enabled: bool) -> bool {
+    if !enabled {
+        ui.add_enabled(
+            false,
+            egui::Button::new(egui::RichText::new(label).color(color)),
+        );
+        return false;
+    }
+    menu_item(ui, label, color)
 }
