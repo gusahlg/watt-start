@@ -274,3 +274,55 @@ fn instance_overview_small() {
     app.show_instance_overview("survival");
     shot_at("instance_overview_small", egui::vec2(900.0, 600.0), app);
 }
+
+// ---- mods ----
+
+#[test]
+fn mods_installed() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    shot("mods_installed", app);
+}
+
+#[test]
+fn mods_browse() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    app.mods_show_browse_for_tests("survival");
+    shot("mods_browse", app);
+}
+
+#[test]
+fn mods_many() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.stage_mod_remove_for_tests("modded", "pwc.ambient-audio");
+    app.stage_mod_add_for_tests("modded", "pwc.recipe-book");
+    shot("mods_many", app);
+}
+
+#[test]
+fn mods_many_browse_filtered() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("modded");
+    app.mods_show_browse_for_tests("modded");
+    app.mods_set_search_for_tests("modded", "ore");
+    shot("mods_many_browse_filtered", app);
+}
+
+#[test]
+fn mods_empty() {
+    let mut app = gui::App::for_snapshot_tests();
+    let Some(name) = app.mods_empty_instance_for_tests() else {
+        return;
+    };
+    app.show_instance_mods(&name);
+    shot("mods_empty", app);
+}
+
+#[test]
+fn mods_narrow() {
+    let mut app = gui::App::for_snapshot_tests();
+    app.show_instance_mods("survival");
+    shot_at("mods_narrow", egui::vec2(900.0, 600.0), app);
+}

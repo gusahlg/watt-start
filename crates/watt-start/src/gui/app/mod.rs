@@ -103,7 +103,7 @@ pub(crate) struct StagedMods {
 }
 
 impl StagedMods {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.add.is_empty() && self.remove.is_empty()
     }
 }
@@ -197,9 +197,8 @@ pub struct App {
     pub(crate) settings_draft: Settings,
     pub(crate) toasts: Vec<toasts::Toast>,
 
-    pub(crate) mods_browse_search: String,
-    pub(crate) mods_browse_category: Option<String>,
-    pub(crate) mods_show_libraries: bool,
+    /// Per-instance Mods tab: segment, filters, and which bundles are expanded.
+    pub(crate) mods_ui: mods_tab::ModsTabState,
 
     pub(crate) notes_draft: HashMap<String, String>,
     /// In-progress display name, keyed by instance directory name.
@@ -241,9 +240,7 @@ impl App {
             confirm: None,
             settings_draft,
             toasts: Vec::new(),
-            mods_browse_search: String::new(),
-            mods_browse_category: None,
-            mods_show_libraries: false,
+            mods_ui: mods_tab::ModsTabState::default(),
             notes_draft: HashMap::new(),
             display_name_draft: HashMap::new(),
             group_draft: HashMap::new(),
