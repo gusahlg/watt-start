@@ -31,16 +31,19 @@ tempfile = "3"
 toml = "0.9"
 
 # The GUI: egui on wgpu. wgpu picks Vulkan, which every machine that runs the game has.
-eframe = { version = "0.37", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "wayland", "x11", "clipboard"] }
 egui = "0.37"
+# Only Hack, the egui icon glyphs and Noto Emoji are used (see gui::theme::install_fonts).
+epaint_default_fonts = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 strip = true
 
 [profile.dev.package."*"]

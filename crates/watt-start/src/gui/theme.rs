@@ -422,12 +422,36 @@ fn install_fonts(ctx: &egui::Context) {
     {
         return;
     }
-    let mut fonts = egui::FontDefinitions::default();
-    let fallbacks = fonts
-        .families
-        .get(&FontFamily::Proportional)
-        .cloned()
-        .unwrap_or_default();
+    // Inter for text, Hack for monospace, egui's icon glyphs (combo arrows, collapsing
+    // headers, DragValue) and Noto Emoji so an instance named "Survival ⚡" still renders.
+    // egui's Ubuntu-Light and emoji-icon-font are not referenced, so they are not linked.
+    let mut fonts = egui::FontDefinitions::empty();
+    fonts.font_data.insert(
+        "Hack".to_owned(),
+        Arc::new(egui::FontData::from_static(
+            epaint_default_fonts::HACK_REGULAR,
+        )),
+    );
+    fonts.font_data.insert(
+        "egui-icons".to_owned(),
+        Arc::new(
+            egui::FontData::from_static(epaint_default_fonts::EGUI_ICONS).tweak(egui::FontTweak {
+                scale: 0.90,
+                ..Default::default()
+            }),
+        ),
+    );
+    fonts.font_data.insert(
+        "NotoEmoji".to_owned(),
+        Arc::new(
+            egui::FontData::from_static(epaint_default_fonts::NOTO_EMOJI_REGULAR).tweak(
+                egui::FontTweak {
+                    scale: 0.81,
+                    ..Default::default()
+                },
+            ),
+        ),
+    );
     fonts.font_data.insert(
         "Inter".to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
@@ -440,15 +464,24 @@ fn install_fonts(ctx: &egui::Context) {
             "../../assets/fonts/Inter-SemiBold.ttf"
         ))),
     );
-    if let Some(proportional) = fonts.families.get_mut(&FontFamily::Proportional) {
-        proportional.insert(0, "Inter".to_owned());
-    }
-    let mut semi = Vec::with_capacity(1 + fallbacks.len());
-    semi.push("InterSemiBold".to_owned());
-    semi.extend(fallbacks);
+    let family = |names: &[&str]| -> Vec<String> {
+        names
+            .iter()
+            .copied()
+            .chain(["egui-icons", "NotoEmoji"])
+            .map(str::to_owned)
+            .collect()
+    };
     fonts
         .families
-        .insert(FontFamily::Name(Arc::from("semibold")), semi);
+        .insert(FontFamily::Proportional, family(&["Inter"]));
+    fonts
+        .families
+        .insert(FontFamily::Monospace, family(&["Hack", "Inter"]));
+    fonts.families.insert(
+        FontFamily::Name(Arc::from("semibold")),
+        family(&["InterSemiBold"]),
+    );
     ctx.set_fonts(fonts);
     ctx.data_mut(|data| data.insert_temp(id("fonts"), true));
 }
