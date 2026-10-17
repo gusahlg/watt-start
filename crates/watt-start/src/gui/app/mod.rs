@@ -107,15 +107,17 @@ pub(crate) enum InstanceTab {
 }
 
 /// Mod changes staged in the Mods tab, not yet applied.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StagedMods {
     pub add: Vec<String>,
     pub remove: Vec<String>,
+    /// Direct mods to relock onto their newest compatible version.
+    pub update: Vec<String>,
 }
 
 impl StagedMods {
     pub(crate) fn is_empty(&self) -> bool {
-        self.add.is_empty() && self.remove.is_empty()
+        self.add.is_empty() && self.remove.is_empty() && self.update.is_empty()
     }
 }
 
@@ -583,6 +585,7 @@ impl App {
                 instance,
                 add,
                 remove,
+                update,
                 ..
             } = &request
         {
@@ -590,6 +593,7 @@ impl App {
             if staged.is_empty() {
                 staged.add.clone_from(add);
                 staged.remove.clone_from(remove);
+                staged.update.clone_from(update);
             }
         }
         if succeeded && let OpRequest::Remove { instance } = &request {
@@ -799,6 +803,7 @@ impl App {
         if !modal_open
             && !typing
             && !popup
+            && !self.mods_claims_enter()
             && let Some(MainView::Instance(name)) = self.main_view.clone()
             && let Some(entry) = self
                 .backend

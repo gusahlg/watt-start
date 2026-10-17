@@ -94,6 +94,9 @@ pub enum OpRequest {
         add: Vec<String>,
         /// Ids to remove.
         remove: Vec<String>,
+        /// Ids to move to their newest compatible version. Absent in older requests.
+        #[serde(default)]
+        update: Vec<String>,
         /// Override the setting.
         build: Option<bool>,
     },
@@ -372,3 +375,25 @@ fn finish(
 
 /// Shared by the op implementations: the result type of one op body (its success summary).
 pub type OpResult = Result<String>;
+
+#[cfg(test)]
+mod tests {
+    use super::OpRequest;
+
+    /// Older launcher builds omit `update`. It deserialises as an empty set and round-trips.
+    #[test]
+    fn mods_update_defaults_when_absent() {
+        let missing = r#"{"op":"mods","instance":"survival","add":[],"remove":[],"build":false}"#;
+        let parsed: OpRequest = serde_json::from_str(missing).expect("update is optional");
+        match &parsed {
+            OpRequest::Mods { update, build, .. } => {
+                assert!(update.is_empty());
+                assert_eq!(*build, Some(false));
+            }
+            other => panic!("expected Mods, got {other:?}"),
+        }
+        let again: OpRequest =
+            serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(parsed, again);
+    }
+}
