@@ -85,6 +85,10 @@ pub fn resolve(paths: &Paths, settings: &Settings, binding: &Binding) -> Result<
             game.game
         }
     };
+    // Canonical, and on Windows without a `\\?\` prefix, so the path handed to pwc (and from
+    // there into `pwc.lock`) is the same shape Linux already stores. A missing checkout keeps
+    // an absolute non-verbatim path instead of depending on the working directory.
+    let pwc_dir = crate::paths::persisted_path(&pwc_dir);
     config.pwc_source = Some(pwc_dir.clone());
     if settings.wrapper == WrapperSetting::None {
         config.wrapper = Wrapper::Command(Vec::new());

@@ -155,14 +155,18 @@ pub(super) fn binding_from_spec(spec: &SourceSpec) -> Binding {
             pwc_source,
             repositories,
         } => Binding::Linked {
-            pwc_source: pwc_source.clone(),
-            repositories: repositories.clone(),
+            pwc_source: crate::paths::persisted_path(pwc_source),
+            repositories: repositories
+                .iter()
+                .map(|path| crate::paths::persisted_path(path))
+                .collect(),
         },
         SourceSpec::PwcDefault => Binding::PwcDefault,
     }
 }
 
 /// One parsed `pwc mod add` argument.
+#[derive(Debug)]
 pub(super) struct ParsedModSpec {
     /// The package id.
     pub id: PackageId,
@@ -171,16 +175,37 @@ pub(super) struct ParsedModSpec {
 }
 
 /// Port of pwc-cli's `parse_mod_spec`: a bare id (`*`), `id@req`, a source directory (`mod.toml`)
-/// or a `.pwcmod` file. Relative paths are relative to `instance_dir`.
+/// or a `.pwcmod` file. Relative paths are relative to `instance_dir`, not the process's working
+/// directory.
 pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedModSpec> {
+    #[cfg(windows)]
+    if awkward_windows_path(spec) {
+        bail!(
+            "{spec}: drive-relative and rooted paths are not accepted; use a full path or a path \
+             relative to the instance"
+        );
+    }
     let raw = Path::new(spec);
-    if raw.exists() {
-        let resolved = if raw.is_absolute() {
-            raw.to_path_buf()
-        } else {
-            instance_dir.join(raw)
-        };
-        let resolved = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    // A separator, a leading `.`, or a `.pwcmod` suffix is a path. A bare id is not, even when
+    // the instance contains a directory of that name (`game/` is every instance's save directory).
+    let path_shaped = raw.is_absolute()
+        || spec.contains('/')
+        || spec.contains(std::path::MAIN_SEPARATOR)
+        || spec.ends_with(".pwcmod")
+        || spec.starts_with('.');
+    // Absolute paths stand as written. A relative path is resolved against the instance and
+    // checked there, never against the process's working directory (which is wherever the
+    // launcher happened to be started from, e.g. an Explorer shortcut).
+    let resolved = if raw.is_absolute() {
+        raw.exists().then(|| raw.to_path_buf())
+    } else if path_shaped {
+        let under_instance = instance_dir.join(raw);
+        under_instance.exists().then_some(under_instance)
+    } else {
+        None
+    };
+    if let Some(resolved) = resolved {
+        let resolved = crate::paths::canonical_path(&resolved).unwrap_or(resolved);
         if resolved.is_dir() {
             let manifest =
                 ModManifest::from_file(&resolved.join("mod.toml")).with_context(|| {
@@ -204,7 +229,7 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
             },
         });
     }
-    if spec.contains('/') || spec.contains(std::path::MAIN_SEPARATOR) || spec.ends_with(".pwcmod") {
+    if path_shaped {
         bail!("{spec}: no such file or directory");
     }
     let (id, req) = match spec.split_once('@') {
@@ -226,6 +251,20 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
             source: ModSource::Registry,
         },
     })
+}
+
+/// `C:foo` (drive-relative) and `\foo` / `/foo` (rooted, not UNC). A full `C:\foo` or `\\server\share`
+/// is a normal path and is not rejected here.
+#[cfg(windows)]
+fn awkward_windows_path(spec: &str) -> bool {
+    let bytes = spec.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return !matches!(bytes.get(2).copied(), Some(b'\\' | b'/'));
+    }
+    if bytes.first() == Some(&b'/') {
+        return true;
+    }
+    bytes.first() == Some(&b'\\') && bytes.get(1) != Some(&b'\\')
 }
 
 /// A generation's identity: `(environment, PWC source, binding pin)`. The environment hash alone
@@ -368,4 +407,38 @@ pub(super) fn prune_dir_entries(dir: &Path, keep: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `game/` exists in every instance. A package id must not be parsed as that directory.
+    #[test]
+    fn a_bare_id_is_not_the_instance_game_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("game")).unwrap();
+        let err = parse_mod_spec(tmp.path(), "game").unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            !text.contains("package source"),
+            "game/ was treated as a mod path: {text}"
+        );
+        let parsed = parse_mod_spec(tmp.path(), "demo.blocks").unwrap();
+        assert!(matches!(parsed.requirement.source, ModSource::Registry));
+        assert_eq!(parsed.id.as_str(), "demo.blocks");
+    }
+
+    /// A relative path is resolved against the instance, including when the working directory
+    /// does not contain it.
+    #[test]
+    fn a_missing_relative_path_is_not_a_package_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = parse_mod_spec(tmp.path(), "mods/example").unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("no such file"),
+            "expected a missing-path error, got {text}"
+        );
+    }
 }

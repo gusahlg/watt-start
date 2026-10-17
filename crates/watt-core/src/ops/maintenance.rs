@@ -164,7 +164,7 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
                 }
             }
             if let Ok(lock) = pwc_manifest::Lockfile::from_file(&dir.join("pwc.lock"))
-                && lock.pwc.source.starts_with(paths.sources())
+                && crate::paths::path_starts_with(&lock.pwc.source, &paths.sources())
                 && lock.pwc.source.file_name() == Some(std::ffi::OsStr::new(Repo::Game.dir_name()))
                 && let Some(snapshot_dir) = lock.pwc.source.parent()
             {

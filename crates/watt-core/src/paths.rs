@@ -98,7 +98,7 @@ impl Paths {
     pub fn new(mut pwc: Dirs) -> Result<Self> {
         std::fs::create_dir_all(&pwc.data)
             .with_context(|| format!("cannot create {}", pwc.data.display()))?;
-        pwc.data = std::fs::canonicalize(&pwc.data)
+        pwc.data = canonical_path(&pwc.data)
             .with_context(|| format!("cannot resolve {}", pwc.data.display()))?;
         let root = pwc.data.join("watt-start");
         std::fs::create_dir_all(&root)
@@ -249,6 +249,72 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     ));
     std::fs::write(&tmp, bytes).with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// Canonicalize `path` without a `\\?\` prefix where an ordinary path can say the same
+/// (`dunce::canonicalize`). On Unix this is exactly `std::fs::canonicalize`.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    dunce::canonicalize(path)
+}
+
+/// A path safe to compare: canonical when that works, otherwise the `\\?\`-stripped form
+/// (the path unchanged on Unix).
+pub fn comparable_path(path: &Path) -> PathBuf {
+    canonical_path(path).unwrap_or_else(|_| dunce::simplified(path).to_path_buf())
+}
+
+/// A path to store. Unix: the path as given (unchanged behaviour). Windows: canonical (not
+/// `\\?\`) when it exists, otherwise absolute with any `\\?\` prefix removed, so a later
+/// launch does not depend on the process's working directory.
+pub fn persisted_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Ok(canon) = canonical_path(path) {
+            return canon;
+        }
+        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        dunce::simplified(&absolute).to_path_buf()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// Whether `a` and `b` name the same place. Unix: plain equality (unchanged behaviour).
+/// Windows: also equal when both canonicalize to the same path, or when they differ only by a
+/// `\\?\` prefix (what `std::fs::canonicalize`, which pwc uses, writes into `pwc.lock`).
+pub fn paths_equal(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        match (canonical_path(a), canonical_path(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => dunce::simplified(a) == dunce::simplified(b),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// `path.starts_with(base)`, and on Windows also after normalizing both through
+/// [`comparable_path`].
+pub fn path_starts_with(path: &Path, base: &Path) -> bool {
+    if path.starts_with(base) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        comparable_path(path).starts_with(comparable_path(base))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// Unix seconds now.

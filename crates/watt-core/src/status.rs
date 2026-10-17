@@ -104,7 +104,7 @@ fn readiness_for_locked(
     lock: &Lockfile,
     source: &ResolvedSource,
 ) -> Readiness {
-    let canonical_source = match std::fs::canonicalize(&source.pwc_dir) {
+    let canonical_source = match crate::paths::canonical_path(&source.pwc_dir) {
         Ok(p) => p,
         Err(e) => {
             return Readiness::Broken {
@@ -112,7 +112,8 @@ fn readiness_for_locked(
             };
         }
     };
-    if lock.pwc.source != canonical_source {
+    // `paths_equal` so a `\\?\` path stored by an older tool matches the canonical one.
+    if !crate::paths::paths_equal(&lock.pwc.source, &canonical_source) {
         return Readiness::NeedsBuild {
             reason: "the game source moved".to_owned(),
         };
