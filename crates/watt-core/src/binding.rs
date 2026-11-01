@@ -3,7 +3,7 @@
 //! builder take these as parameters, which is how each instance gets its own sources without the
 //! launcher ever touching pwc's global `config.toml`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use pwc_instance::{Config, RepositoryConfig, Wrapper};
@@ -42,7 +42,7 @@ pub fn pwc_config(paths: &Paths) -> Result<Config> {
 /// - `PwcDefault`: pwc's configuration as it is (error if no `pwc-source` is configured).
 /// - `Linked`: that checkout; its repositories, or pwc's when the list is empty.
 /// - `Managed`: the snapshots of its pin (which must exist: create them with
-///   `snapshots::ensure_*` first); repositories = the mods snapshot's `mods/` (as `first-party`)
+///   `snapshots::ensure_*` first); repositories = the modules snapshot's `modules/` (as `first-party`)
 ///   followed by the settings' extra repositories. An unpinned managed binding is an error.
 ///
 /// The wrapper follows pwc's `[build] wrapper` (and `PWC_NO_WRAPPER`) unless the settings say
@@ -68,8 +68,8 @@ pub fn resolve(paths: &Paths, settings: &Settings, binding: &Binding) -> Result<
                 bail!("the `{channel}` sources have not been downloaded yet (run Update)");
             };
             let game = snapshots::game_snapshot(paths, &pin.game, &pin.engine);
-            let mods = snapshots::mods_snapshot(paths, &pin.mods);
-            if !snapshots::is_complete(&game.dir) || !snapshots::is_complete(&mods) {
+            let modules = snapshots::modules_snapshot(paths, &pin.modules);
+            if !snapshots::is_complete(&game.dir) || !snapshots::is_complete(&modules) {
                 bail!(
                     "the sources for {} are missing (run Update or Rebuild to restore them)",
                     pin.label()
@@ -77,7 +77,7 @@ pub fn resolve(paths: &Paths, settings: &Settings, binding: &Binding) -> Result<
             }
             let mut repos = vec![RepositoryConfig {
                 name: "first-party".to_owned(),
-                path: mods.join(Repo::Mods.dir_name()).join("mods"),
+                path: package_repository_dir(&modules.join(Repo::Modules.dir_name())),
             }];
             repos.extend(named_repositories(settings.extra_repositories.iter().cloned()));
             dedupe_names(&mut repos);
@@ -101,7 +101,18 @@ pub fn resolve(paths: &Paths, settings: &Settings, binding: &Binding) -> Result<
     })
 }
 
-/// Repositories named after their directories ("mods", "mods-2", ...).
+/// The first-party package directory of a package-manager checkout: `modules/`, or `mods/` in
+/// snapshots of revisions from before the rename.
+fn package_repository_dir(checkout: &Path) -> PathBuf {
+    let modules = checkout.join("modules");
+    if modules.is_dir() {
+        return modules;
+    }
+    let legacy = checkout.join("mods");
+    if legacy.is_dir() { legacy } else { modules }
+}
+
+/// Repositories named after their directories ("modules", "modules-2", ...).
 fn named_repositories(dirs: impl Iterator<Item = PathBuf>) -> Vec<RepositoryConfig> {
     let mut repos: Vec<RepositoryConfig> = dirs
         .map(|path| RepositoryConfig {
@@ -132,14 +143,31 @@ fn dedupe_names(repos: &mut [RepositoryConfig]) {
 mod tests {
     use super::*;
 
+    /// `modules/` wins; an older package-manager snapshot with only `mods/` still resolves.
+    #[test]
+    fn the_package_directory_is_modules_or_the_older_mods() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old");
+        std::fs::create_dir_all(old.join("mods")).unwrap();
+        assert_eq!(package_repository_dir(&old), old.join("mods"));
+        let new = tmp.path().join("new");
+        std::fs::create_dir_all(new.join("modules")).unwrap();
+        std::fs::create_dir_all(new.join("mods")).unwrap();
+        assert_eq!(package_repository_dir(&new), new.join("modules"));
+        assert_eq!(
+            package_repository_dir(&tmp.path().join("none")),
+            tmp.path().join("none/modules")
+        );
+    }
+
     #[test]
     fn repository_names_are_unique() {
         let repos = named_repositories(
-            ["/a/mods", "/b/mods", "/c/extra"]
+            ["/a/modules", "/b/modules", "/c/extra"]
                 .into_iter()
                 .map(PathBuf::from),
         );
         let names: Vec<&str> = repos.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["mods", "mods-2", "extra"]);
+        assert_eq!(names, ["modules", "modules-2", "extra"]);
     }
 }

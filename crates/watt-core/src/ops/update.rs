@@ -41,7 +41,7 @@ pub(super) fn run(
         Binding::Managed {
             channel,
             engine_ref,
-            mods_ref,
+            modules_ref,
             pin: old_pin,
         } => {
             let outcome = update_managed(
@@ -50,7 +50,7 @@ pub(super) fn run(
                 &instance,
                 &channel,
                 &engine_ref,
-                &mods_ref,
+                &modules_ref,
                 old_pin.as_ref(),
                 true,
                 reporter,
@@ -79,18 +79,18 @@ pub(super) fn run(
             let summary_prefix = if report.changes.is_empty() {
                 "Already up to date".to_owned()
             } else {
-                "Updated mods".to_owned()
+                "Updated modules".to_owned()
             };
             (resolved, report, summary_prefix)
         }
     };
 
-    let mod_changes = lock_report.changes.len();
+    let module_changes = lock_report.changes.len();
     let mut summary = summary_prefix;
-    if mod_changes > 0 {
+    if module_changes > 0 {
         summary = format!(
-            "{summary} \u{b7} {mod_changes} mod{} changed",
-            if mod_changes == 1 { "" } else { "s" }
+            "{summary} \u{b7} {module_changes} module{} changed",
+            if module_changes == 1 { "" } else { "s" }
         );
     }
 
@@ -166,7 +166,7 @@ pub(super) fn update_managed(
     instance: &Instance,
     channel: &str,
     engine_ref: &str,
-    mods_ref: &str,
+    modules_ref: &str,
     old_pin: Option<&Pin>,
     do_backup: bool,
     reporter: &Reporter,
@@ -197,12 +197,12 @@ pub(super) fn update_managed(
 
     let game_mirror = paths.mirror(Repo::Game);
     let engine_mirror = paths.mirror(Repo::Engine);
-    let mods_mirror = paths.mirror(Repo::Mods);
+    let modules_mirror = paths.mirror(Repo::Modules);
 
     let game_sha = git::resolve(&game_mirror, channel)?
         .ok_or_else(|| anyhow!("the game has no branch or tag `{channel}`"))?;
     let (engine_sha, engine_ref_used) = resolve_ref(&engine_mirror, engine_ref, channel)?;
-    let (mods_sha, mods_ref_used) = resolve_ref(&mods_mirror, mods_ref, channel)?;
+    let (modules_sha, modules_ref_used) = resolve_ref(&modules_mirror, modules_ref, channel)?;
 
     // Checking out the new snapshot and backing up worlds both assume nothing is writing to
     // `game/` right now; a fetch (above) is harmless either way, but fail here, before any of
@@ -240,8 +240,8 @@ pub(super) fn update_managed(
             &mut on_line,
         )
         .context("cannot prepare the game snapshot")?;
-        snapshots::ensure_mods(paths, &mods_sha, &mut on_progress, &mut on_line)
-            .context("cannot prepare the mods snapshot")?;
+        snapshots::ensure_modules(paths, &modules_sha, &mut on_progress, &mut on_line)
+            .context("cannot prepare the modules snapshot")?;
     }
     reporter.check_cancelled()?;
 
@@ -264,15 +264,15 @@ pub(super) fn update_managed(
     let new_pin = Pin {
         game: game_sha.clone(),
         engine: engine_sha.clone(),
-        mods: mods_sha.clone(),
+        modules: modules_sha.clone(),
         game_ref: channel.to_owned(),
         engine_ref: engine_ref_used,
-        mods_ref: mods_ref_used,
+        modules_ref: modules_ref_used,
     };
     let new_binding = Binding::Managed {
         channel: channel.to_owned(),
         engine_ref: engine_ref.to_owned(),
-        mods_ref: mods_ref.to_owned(),
+        modules_ref: modules_ref.to_owned(),
         pin: Some(new_pin.clone()),
     };
     let resolved = binding::resolve(paths, settings, &new_binding)
@@ -309,10 +309,10 @@ pub(super) fn update_managed(
                 engine_sha.as_str(),
             ),
             (
-                Repo::Mods,
-                &mods_mirror,
-                old_pin.map(|p| p.mods.as_str()),
-                mods_sha.as_str(),
+                Repo::Modules,
+                &modules_mirror,
+                old_pin.map(|p| p.modules.as_str()),
+                modules_sha.as_str(),
             ),
         ] {
             if old_sha == Some(new_sha) {
@@ -333,7 +333,7 @@ pub(super) fn update_managed(
     })
 }
 
-/// Resolve an engine/mods ref: `auto` tries the channel name first, then the mirror's default
+/// Resolve an engine/modules ref: `auto` tries the channel name first, then the mirror's default
 /// branch; anything else is resolved directly.
 pub(super) fn resolve_ref(mirror: &Path, want: &str, channel: &str) -> Result<(String, String)> {
     if want == AUTO {

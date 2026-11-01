@@ -1,20 +1,20 @@
 # watt-start
 
 The launcher for [Project Watt Cubed](https://github.com/gusahlg/project_watt_cubed). It keeps
-several game **instances** side by side, each with its own game version and mods, updates them with
+several game **instances** side by side, each with its own game version and modules, updates them with
 one click and recompiles them when needed, so you never have to think about `cargo` or `pwc`.
 
-PWC mods are Rust code compiled into the game, so every instance is its own build. watt-start
+PWC modules are Rust code compiled into the game, so every instance is its own build. watt-start
 is a graphical front end over the [PWC package manager](https://github.com/gusahlg/pwc-package-manager)'s
 libraries and shares its state: instances made with `pwc` show up here, and the other way round.
 
 ## What it does
 
 - **Instances**: name them, colour them, group them, mark favourites. Each shows its game version,
-  branch, engine revision, mods and whether it is ready to play.
-- **Update**: one button fetches the newest game, voxel engine and mods together, shows what
+  branch, engine revision, modules and whether it is ready to play.
+- **Update**: one button fetches the newest game, voxel engine and modules together, shows what
   changed, backs up your worlds when the game itself changes, and recompiles.
-- **Mods**: browse the available mods, stage additions and removals, then apply. The instance is
+- **Modules**: browse the available modules, stage additions and removals, then apply. The instance is
   recompiled automatically (you can turn that off in Settings).
 - **Builds**: recompile on demand, roll back to an earlier build that worked, or play the last
   working build while a new one is broken.
@@ -94,7 +94,7 @@ The window is the main interface, but every operation also runs from a terminal:
 
 ```sh
 watt-start list                       # instances and their state
-watt-start create survival --mod pwc.essentials
+watt-start create survival --module pwc.essentials
 watt-start update survival
 watt-start build survival --force
 watt-start play survival

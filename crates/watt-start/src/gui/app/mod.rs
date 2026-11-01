@@ -5,7 +5,7 @@ mod dialogs;
 mod instance_page;
 mod instance_tabs;
 mod launcher_update;
-mod mods_tab;
+mod modules_tab;
 mod new_instance;
 mod settings_page;
 mod sidebar;
@@ -28,22 +28,22 @@ use crate::gui::backend::{Backend, DemoBackend, RealBackend, RunningOp};
 use crate::gui::forge_bridge::ForgeBridge;
 use crate::gui::theme;
 
-/// Which mod preset [`new_instance`] offers.
+/// Which module preset [`new_instance`] offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ModPreset {
+pub(crate) enum ModulePreset {
     Essentials,
     EssentialsDevToolkit,
     Vanilla,
 }
 
-impl ModPreset {
+impl ModulePreset {
     fn specs(self) -> Vec<String> {
         match self {
-            ModPreset::Essentials => vec!["pwc.essentials".to_owned()],
-            ModPreset::EssentialsDevToolkit => {
+            ModulePreset::Essentials => vec!["pwc.essentials".to_owned()],
+            ModulePreset::EssentialsDevToolkit => {
                 vec!["pwc.essentials".to_owned(), "pwc.dev-toolkit".to_owned()]
             }
-            ModPreset::Vanilla => Vec::new(),
+            ModulePreset::Vanilla => Vec::new(),
         }
     }
 }
@@ -51,14 +51,14 @@ impl ModPreset {
 /// Which kind of source a dialog is configuring.
 ///
 /// Managed and linked variants keep the binding fields the dialog does not edit
-/// (`engine_ref`, `mods_ref`, `repositories`) so Apply can put them back unchanged.
+/// (`engine_ref`, `modules_ref`, `repositories`) so Apply can put them back unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SourceChoice {
-    /// Follow a game branch. `engine_ref` and `mods_ref` are `auto` for a new instance.
+    /// Follow a game branch. `engine_ref` and `modules_ref` are `auto` for a new instance.
     Managed {
         channel: String,
         engine_ref: String,
-        mods_ref: String,
+        modules_ref: String,
     },
     /// Build a checkout on this machine. `repositories` empty means pwc's list.
     Linked {
@@ -75,11 +75,11 @@ impl SourceChoice {
             SourceChoice::Managed {
                 channel,
                 engine_ref,
-                mods_ref,
+                modules_ref,
             } => SourceSpec::Managed {
                 channel: channel.clone(),
                 engine_ref: engine_ref.clone(),
-                mods_ref: mods_ref.clone(),
+                modules_ref: modules_ref.clone(),
             },
             SourceChoice::Linked { path, repositories } => SourceSpec::Linked {
                 pwc_source: PathBuf::from(path),
@@ -102,22 +102,22 @@ pub(crate) enum MainView {
 pub(crate) enum InstanceTab {
     #[default]
     Overview,
-    Mods,
+    Modules,
     Builds,
     Log,
     InstanceSettings,
 }
 
-/// Mod changes staged in the Mods tab, not yet applied.
+/// Module changes staged in the Modules tab, not yet applied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct StagedMods {
+pub(crate) struct StagedModules {
     pub add: Vec<String>,
     pub remove: Vec<String>,
-    /// Direct mods to relock onto their newest compatible version.
+    /// Direct modules to relock onto their newest compatible version.
     pub update: Vec<String>,
 }
 
-impl StagedMods {
+impl StagedModules {
     pub(crate) fn is_empty(&self) -> bool {
         self.add.is_empty() && self.remove.is_empty() && self.update.is_empty()
     }
@@ -213,7 +213,7 @@ pub struct App {
     pub(crate) instance_tab: InstanceTab,
 
     pub(crate) ops: HashMap<String, OpSlot>,
-    pub(crate) staged_mods: HashMap<String, StagedMods>,
+    pub(crate) staged_modules: HashMap<String, StagedModules>,
     pub(crate) updates: HashMap<String, Vec<RepoLog>>,
     pub(crate) startup_check: Option<StartupCheck>,
     /// First frame's clock. The startup update check waits for the catalog, or two seconds.
@@ -242,8 +242,8 @@ pub struct App {
     /// Sidebar row, update dialog, and the one-shot restart after a replace.
     pub(crate) launcher_update: launcher_update::UpdateUi,
 
-    /// Per-instance Mods tab: segment, filters, and which bundles are expanded.
-    pub(crate) mods_ui: mods_tab::ModsTabState,
+    /// Per-instance Modules tab: segment, filters, and which bundles are expanded.
+    pub(crate) modules_ui: modules_tab::ModulesTabState,
 
     pub(crate) notes_draft: HashMap<String, String>,
     /// In-progress display name, keyed by instance directory name.
@@ -284,7 +284,7 @@ impl App {
             main_view: None,
             instance_tab: InstanceTab::Overview,
             ops: HashMap::new(),
-            staged_mods: HashMap::new(),
+            staged_modules: HashMap::new(),
             updates: HashMap::new(),
             startup_check: None,
             first_frame: None,
@@ -300,7 +300,7 @@ impl App {
             settings_draft,
             toasts: Vec::new(),
             launcher_update: launcher_update::UpdateUi::default(),
-            mods_ui: mods_tab::ModsTabState::default(),
+            modules_ui: modules_tab::ModulesTabState::default(),
             notes_draft: HashMap::new(),
             display_name_draft: HashMap::new(),
             group_draft: HashMap::new(),
@@ -354,10 +354,10 @@ impl App {
     }
 
     #[allow(dead_code)]
-    /// Test/screenshot helper: show an instance's Mods tab.
-    pub(crate) fn show_instance_mods(&mut self, name: &str) {
+    /// Test/screenshot helper: show an instance's Modules tab.
+    pub(crate) fn show_instance_modules(&mut self, name: &str) {
         self.main_view = Some(MainView::Instance(name.to_owned()));
-        self.instance_tab = InstanceTab::Mods;
+        self.instance_tab = InstanceTab::Modules;
     }
 
     #[allow(dead_code)]
@@ -368,9 +368,9 @@ impl App {
     }
 
     #[allow(dead_code)]
-    /// Test/screenshot helper: stage adding `id` to an instance's mods, without applying it.
-    pub(crate) fn stage_mod_add_for_tests(&mut self, instance: &str, id: &str) {
-        self.staged_mods
+    /// Test/screenshot helper: stage adding `id` to an instance's modules, without applying it.
+    pub(crate) fn stage_module_add_for_tests(&mut self, instance: &str, id: &str) {
+        self.staged_modules
             .entry(instance.to_owned())
             .or_default()
             .add
@@ -378,9 +378,9 @@ impl App {
     }
 
     #[allow(dead_code)]
-    /// Test/screenshot helper: stage removing `id` from an instance's mods, without applying it.
-    pub(crate) fn stage_mod_remove_for_tests(&mut self, instance: &str, id: &str) {
-        self.staged_mods
+    /// Test/screenshot helper: stage removing `id` from an instance's modules, without applying it.
+    pub(crate) fn stage_module_remove_for_tests(&mut self, instance: &str, id: &str) {
+        self.staged_modules
             .entry(instance.to_owned())
             .or_default()
             .remove
@@ -572,7 +572,7 @@ impl App {
     }
 
     /// Runs once per op, when its outcome arrives: harvest its changes, refresh the catalog,
-    /// put failed mod changes back in the list, and toast when the op isn't on screen.
+    /// put failed module changes back in the list, and toast when the op isn't on screen.
     fn on_op_settled(&mut self, ctx: &egui::Context, key: &str) {
         self.harvest_changes(key);
         self.backend.refresh();
@@ -591,17 +591,17 @@ impl App {
             .iter()
             .any(|c| matches!(c, Change::Launched { .. }));
 
-        // After `refresh`, so a chained rescan finishes before the mod catalogue reloads.
+        // After `refresh`, so a chained rescan finishes before the module catalogue reloads.
         if matches!(
             kind,
-            OpKind::Create | OpKind::Mods | OpKind::Update | OpKind::SetSource
+            OpKind::Create | OpKind::Modules | OpKind::Update | OpKind::SetSource
         ) {
-            self.backend.invalidate_mods();
+            self.backend.invalidate_modules();
         }
 
-        // A failed mod change: give the user their staged list back (they can Discard it).
+        // A failed module change: give the user their staged list back (they can Discard it).
         if !succeeded
-            && let OpRequest::Mods {
+            && let OpRequest::Modules {
                 instance,
                 add,
                 remove,
@@ -609,7 +609,7 @@ impl App {
                 ..
             } = &request
         {
-            let staged = self.staged_mods.entry(instance.clone()).or_default();
+            let staged = self.staged_modules.entry(instance.clone()).or_default();
             if staged.is_empty() {
                 staged.add.clone_from(add);
                 staged.remove.clone_from(remove);
@@ -698,7 +698,7 @@ impl App {
 
     /// Drop everything kept per instance once it is gone.
     fn forget_instance(&mut self, instance: &str) {
-        self.staged_mods.remove(instance);
+        self.staged_modules.remove(instance);
         self.updates.remove(instance);
         self.notes_draft.remove(instance);
         self.display_name_draft.remove(instance);
@@ -916,7 +916,7 @@ impl App {
         if !modal_open
             && !typing
             && !popup
-            && !self.mods_claims_enter()
+            && !self.modules_claims_enter()
             && plain_enter
             && let Some(MainView::Instance(name)) = self.main_view.clone()
         {
@@ -1141,7 +1141,7 @@ impl App {
 pub(crate) fn op_noun(kind: OpKind) -> &'static str {
     match kind {
         OpKind::Create => "creation",
-        OpKind::Mods => "mod change",
+        OpKind::Modules => "module change",
         OpKind::Update => "update",
         OpKind::Build => "build",
         OpKind::Play => "launch",

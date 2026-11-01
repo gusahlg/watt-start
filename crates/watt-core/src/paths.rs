@@ -12,7 +12,7 @@
 //!   git.lock                    held while mirrors or snapshots are modified
 //!   build.lock                  held by the launcher from `prepare` through a build's metadata
 //!   sources/v1/pwc-<g12>-<e12>/ game + engine snapshot (siblings, as Cargo needs)
-//!   sources/v1/mods-<m12>/      package manager snapshot (its mods/ is a repository)
+//!   sources/v1/modules-<m12>/      package manager snapshot (its modules/ is a repository)
 //!   logs/<op id>.log            one log per op
 //!   update-check.json           last successful launcher self-update check
 //!   updates/<version>/          downloaded launcher binaries
@@ -22,7 +22,7 @@
 //!   meta.lock                   held while meta.toml is read-modified-written
 //!   op.lock                     held by the op working on this instance
 //!   generations/<n>.lock        the pwc.lock of each recorded generation
-//!   generations/<n>.instance.toml the wanted mods when that generation was built
+//!   generations/<n>.instance.toml the wanted modules when that generation was built
 //!   game.toml                   the running game (pid, started, log), while it runs
 //!   game.lock                   held for exactly as long as the game process runs
 //!   logs/game-<time>.log        game output
@@ -45,20 +45,21 @@ pub enum Repo {
     Game,
     /// `voxel-engine`.
     Engine,
-    /// `pwc-package-manager` (its `mods/` directory is the first-party repository).
-    Mods,
+    /// `pwc-package-manager` (its `modules/` directory is the first-party repository).
+    #[serde(alias = "mods")]
+    Modules,
 }
 
 impl Repo {
     /// All three.
-    pub const ALL: [Repo; 3] = [Repo::Game, Repo::Engine, Repo::Mods];
+    pub const ALL: [Repo; 3] = [Repo::Game, Repo::Engine, Repo::Modules];
 
     /// The directory name inside a snapshot (and the GitHub repository name).
     pub fn dir_name(self) -> &'static str {
         match self {
             Self::Game => "project_watt_cubed",
             Self::Engine => "voxel-engine",
-            Self::Mods => "pwc-package-manager",
+            Self::Modules => "pwc-package-manager",
         }
     }
 
@@ -67,12 +68,12 @@ impl Repo {
         format!("https://github.com/gusahlg/{}.git", self.dir_name())
     }
 
-    /// For people: "Game", "Engine", "Mods".
+    /// For people: "Game", "Engine", "Modules".
     pub fn label(self) -> &'static str {
         match self {
             Self::Game => "Game",
             Self::Engine => "Voxel engine",
-            Self::Mods => "Mods",
+            Self::Modules => "Modules",
         }
     }
 }
@@ -210,7 +211,7 @@ impl InstancePaths {
         self.generations().join(format!("{id}.lock"))
     }
 
-    /// `watt-start/generations/<id>.instance.toml`: the wanted mods when the generation was built.
+    /// `watt-start/generations/<id>.instance.toml`: the wanted modules when the generation was built.
     pub fn generation_manifest(&self, id: u64) -> PathBuf {
         self.generations().join(format!("{id}.instance.toml"))
     }

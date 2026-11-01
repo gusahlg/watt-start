@@ -135,18 +135,18 @@ fn frame_cost() {
     }
     {
         let mut app = stress_app();
-        app.show_instance_mods("s00");
-        app.mods_show_browse_for_tests("s00");
+        app.show_instance_modules("s00");
+        app.modules_show_browse_for_tests("s00");
         let mut harness = harness(app);
-        measure("mods-browse", &mut harness);
+        measure("modules-browse", &mut harness);
     }
     {
         let mut app = stress_app();
-        app.show_instance_mods("s00");
-        app.mods_show_browse_for_tests("s00");
-        app.mods_set_search_for_tests("s00", "stress");
+        app.show_instance_modules("s00");
+        app.modules_show_browse_for_tests("s00");
+        app.modules_set_search_for_tests("s00", "stress");
         let mut harness = harness(app);
-        measure("mods-search", &mut harness);
+        measure("modules-search", &mut harness);
     }
     {
         let mut app = stress_app();

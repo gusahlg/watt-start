@@ -1261,23 +1261,27 @@ fn gallery_pills(ui: &mut Ui) {
         ui,
         "gallery-segments",
         &mut segment,
-        &[("Overview", None), ("Mods", Some(12)), ("Builds", Some(3))],
+        &[
+            ("Overview", None),
+            ("Modules", Some(12)),
+            ("Builds", Some(3)),
+        ],
     );
 
     section_heading(ui, "Tabs");
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum DemoTab {
         Overview,
-        Mods,
+        Modules,
         Log,
     }
-    let mut tab = DemoTab::Mods;
+    let mut tab = DemoTab::Modules;
     tabs(
         ui,
         &mut tab,
         &[
             (DemoTab::Overview, "Overview", None, false),
-            (DemoTab::Mods, "Mods", Some(12), true),
+            (DemoTab::Modules, "Modules", Some(12), true),
             (DemoTab::Log, "Log", None, false),
         ],
     );
@@ -1299,7 +1303,7 @@ fn gallery_cards(ui: &mut Ui) {
                 .font(theme::semibold(14.0))
                 .color(p.text_bright),
         );
-        ui.label(theme::muted("1.21.11 · 12 mods · release"));
+        ui.label(theme::muted("1.21.11 · 12 modules · release"));
     });
     card_with_bar(ui, p.volt, |ui| {
         ui.label(
@@ -1315,12 +1319,12 @@ fn gallery_cards(ui: &mut Ui) {
         ui,
         true,
         "Essentials",
-        "The usual mods for a survival world.",
+        "The usual modules for a survival world.",
         |ui| {
             ui.label(theme::muted("Profile: release"));
         },
     );
-    choice_card_plain(ui, false, "Vanilla", "No mods. The game, as shipped.");
+    choice_card_plain(ui, false, "Vanilla", "No modules. The game, as shipped.");
 
     section_heading(ui, "Rows");
     egui::Frame::new()

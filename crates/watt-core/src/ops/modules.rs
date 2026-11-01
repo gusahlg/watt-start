@@ -1,4 +1,4 @@
-//! The `Mods` op: add/remove mod requirements, relock, rebuild.
+//! The `Modules` op: add/remove module requirements, relock, rebuild.
 
 use std::collections::BTreeSet;
 
@@ -19,7 +19,7 @@ pub(super) fn run(
     request: &OpRequest,
     reporter: &Reporter,
 ) -> OpResult {
-    let OpRequest::Mods {
+    let OpRequest::Modules {
         instance: name,
         add,
         remove,
@@ -27,7 +27,7 @@ pub(super) fn run(
         build,
     } = request
     else {
-        unreachable!("ops::run dispatches Mods requests only")
+        unreachable!("ops::run dispatches Modules requests only")
     };
 
     reporter.phase(Phase::Prepare, false);
@@ -36,15 +36,18 @@ pub(super) fn run(
 
     for id in remove {
         let id = PackageId::parse(id).with_context(|| format!("`{id}` is not a package id"))?;
-        if instance.manifest.mods.remove(&id).is_none() {
-            bail!("`{id}` is not a mod of instance `{name}`");
+        if instance.manifest.modules.remove(&id).is_none() {
+            bail!("`{id}` is not a module of instance `{name}`");
         }
     }
     let mut added = Vec::new();
     for spec in add {
-        let parsed = common::parse_mod_spec(&instance.dir, spec)?;
+        let parsed = common::parse_module_spec(&instance.dir, spec)?;
         added.push(parsed.id.clone());
-        instance.manifest.mods.insert(parsed.id, parsed.requirement);
+        instance
+            .manifest
+            .modules
+            .insert(parsed.id, parsed.requirement);
     }
     instance.save().context("cannot write instance.toml")?;
 
@@ -85,7 +88,7 @@ pub(super) fn run(
         lock_report.changes.len()
     );
 
-    if build.unwrap_or(settings.rebuild_after_mod_change) {
+    if build.unwrap_or(settings.rebuild_after_module_change) {
         reporter.check_cancelled()?;
         let built = crate::build::build(
             paths,

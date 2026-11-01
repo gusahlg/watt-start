@@ -99,7 +99,7 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $exe
 $shortcut.WorkingDirectory = $dest
-$shortcut.Description = "Play, update and mod Project Watt Cubed"
+$shortcut.Description = "Play, update and extend Project Watt Cubed with modules"
 $shortcut.Save()
 
 Write-Info ""

@@ -16,7 +16,7 @@ use watt_core::settings::Settings;
 pub struct ManagedRemotes {
     pub game: PathBuf,
     pub engine: PathBuf,
-    pub mods: PathBuf,
+    pub modules: PathBuf,
 }
 
 /// These tests exercise real OS primitives (advisory file locks, detached subprocesses) that
@@ -24,7 +24,7 @@ pub struct ManagedRemotes {
 /// thread count (`World::new` holds this for the whole test).
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// A whole fake installation: a PWC source, a mod repository, a fake toolchain, and the
+/// A whole fake installation: a PWC source, a module repository, a fake toolchain, and the
 /// launcher's own `Paths`.
 pub struct World {
     _serial: MutexGuard<'static, ()>,
@@ -79,7 +79,7 @@ impl World {
         }
     }
 
-    /// Write a package (`mod.toml`, `README.md`, `LICENSE`, `src/lib.rs`) into the repository at
+    /// Write a package (`module.toml`, `README.md`, `LICENSE`, `src/lib.rs`) into the repository at
     /// `<repo>/<id>-<version>/`.
     pub fn add_package(&self, id: &str, version: &str, deps: &[(&str, &str)]) -> PathBuf {
         let dir = self.repo_dir.join(format!("{id}-{version}"));
@@ -112,7 +112,7 @@ impl World {
         (outcome, sink)
     }
 
-    /// Create local, plain (non-bare) git checkouts standing in for the game, engine and mods
+    /// Create local, plain (non-bare) git checkouts standing in for the game, engine and modules
     /// repositories, each with a `main` branch, and point `settings.remotes` at them so
     /// `Managed` instances fetch from the filesystem instead of the network.
     pub fn add_managed_remotes(&mut self) -> ManagedRemotes {
@@ -130,10 +130,10 @@ impl World {
         std::fs::write(engine.join("src/lib.rs"), "").unwrap();
         commit_all(&engine, "engine: initial");
 
-        let mods = init_git_repo(&self.root.path().join("remote-mods"));
-        std::fs::create_dir_all(mods.join("mods")).unwrap();
-        std::fs::write(mods.join("mods/.gitkeep"), "").unwrap();
-        commit_all(&mods, "mods: initial");
+        let modules = init_git_repo(&self.root.path().join("remote-modules"));
+        std::fs::create_dir_all(modules.join("modules")).unwrap();
+        std::fs::write(modules.join("modules/.gitkeep"), "").unwrap();
+        commit_all(&modules, "modules: initial");
 
         self.settings
             .remotes
@@ -143,23 +143,27 @@ impl World {
             .insert(Repo::Engine, engine.to_string_lossy().into_owned());
         self.settings
             .remotes
-            .insert(Repo::Mods, mods.to_string_lossy().into_owned());
+            .insert(Repo::Modules, modules.to_string_lossy().into_owned());
 
-        ManagedRemotes { game, engine, mods }
+        ManagedRemotes {
+            game,
+            engine,
+            modules,
+        }
     }
 
-    /// Add a package to a `mods` remote checkout (from [`World::add_managed_remotes`]) and commit
+    /// Add a package to a `modules` remote checkout (from [`World::add_managed_remotes`]) and commit
     /// it, so the next `Update`/`Create` fetch sees it.
     pub fn add_remote_package(
         &self,
-        mods_repo: &Path,
+        modules_repo: &Path,
         id: &str,
         version: &str,
         deps: &[(&str, &str)],
     ) {
-        let dir = mods_repo.join("mods").join(format!("{id}-{version}"));
+        let dir = modules_repo.join("modules").join(format!("{id}-{version}"));
         write_package(&dir, id, version, deps);
-        commit_all(mods_repo, &format!("mods: add {id} {version}"));
+        commit_all(modules_repo, &format!("modules: add {id} {version}"));
     }
 }
 
@@ -197,25 +201,25 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
 /// The fake PWC source tree's files, written at `dir` (used both for the local, non-git PWC
 /// source and for the managed "game" remote checkout).
 fn write_pwc_tree(dir: &Path, version: &str) {
-    std::fs::create_dir_all(dir.join("crates/pwc-mod-api/src")).unwrap();
+    std::fs::create_dir_all(dir.join("crates/pwc-module-api/src")).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("assets")).unwrap();
     std::fs::write(
         dir.join("Cargo.toml"),
         format!(
             "[package]\nname = \"project_watt_cubed\"\nversion = \"{version}\"\nedition = \"2024\"\n\n\
-             [workspace]\nresolver = \"2\"\nmembers = [\"crates/pwc-mod-api\"]\n"
+             [workspace]\nresolver = \"2\"\nmembers = [\"crates/pwc-module-api\"]\n"
         ),
     )
     .unwrap();
     std::fs::write(dir.join("Cargo.lock"), "# seed lock\nversion = 4\n").unwrap();
     std::fs::write(dir.join("src/lib.rs"), "").unwrap();
     std::fs::write(
-        dir.join("crates/pwc-mod-api/Cargo.toml"),
-        "[package]\nname = \"pwc-mod-api\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        dir.join("crates/pwc-module-api/Cargo.toml"),
+        "[package]\nname = \"pwc-module-api\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("crates/pwc-mod-api/src/lib.rs"), "").unwrap();
+    std::fs::write(dir.join("crates/pwc-module-api/src/lib.rs"), "").unwrap();
 }
 
 fn fake_pwc_source(root: &Path) -> PathBuf {
@@ -229,7 +233,7 @@ fn write_package(dir: &Path, id: &str, version: &str, deps: &[(&str, &str)]) {
     let mut text = format!(
         "format = 1\n\n[package]\nid = \"{id}\"\nname = \"Test {id}\"\nversion = \"{version}\"\n\
          description = \"A test package for watt-core's tests.\"\nauthors = [\"Tester\"]\n\
-         license = \"AGPL-3.0-or-later\"\nlicense-files = [\"LICENSE\"]\nkind = \"mod\"\n\
+         license = \"AGPL-3.0-or-later\"\nlicense-files = [\"LICENSE\"]\nkind = \"module\"\n\
          pwc-api = \"^1.0\"\n"
     );
     if !deps.is_empty() {
@@ -238,7 +242,7 @@ fn write_package(dir: &Path, id: &str, version: &str, deps: &[(&str, &str)]) {
             text.push_str(&format!("\"{dep_id}\" = \"{req}\"\n"));
         }
     }
-    std::fs::write(dir.join("mod.toml"), text).unwrap();
+    std::fs::write(dir.join("module.toml"), text).unwrap();
     std::fs::write(dir.join("README.md"), format!("# {id}\n")).unwrap();
     std::fs::write(
         dir.join("LICENSE"),

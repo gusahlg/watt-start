@@ -585,7 +585,7 @@ fn pending_subtitle(kind: OpKind) -> &'static str {
         OpKind::Play => "Starting…",
         OpKind::Rollback => "Rolling back…",
         OpKind::Remove => "Removing…",
-        OpKind::Mods => "Applying mods…",
+        OpKind::Modules => "Applying modules…",
         OpKind::SetSource => "Switching source…",
         OpKind::CheckUpdates => "Checking…",
         OpKind::Maintenance => "Cleaning up…",

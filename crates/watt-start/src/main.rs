@@ -44,7 +44,7 @@ enum Command {
         /// The request, as JSON (see `watt_core::ops::OpRequest`).
         #[arg(long, conflicts_with = "request_stdin")]
         request: Option<String>,
-        /// Read the request JSON from stdin until EOF. What the GUI spawns, so a long mod list
+        /// Read the request JSON from stdin until EOF. What the GUI spawns, so a long module list
         /// is not a command-line argument. `--request` remains the form to type by hand.
         #[arg(long)]
         request_stdin: bool,
@@ -68,18 +68,18 @@ enum Command {
         /// Build against this game checkout instead (developers).
         #[arg(long, conflicts_with = "channel")]
         linked: Option<std::path::PathBuf>,
-        /// Mods to add (`pwc mod add` specs).
-        #[arg(long = "mod")]
-        mods: Vec<String>,
+        /// Modules to add (`pwc module add` specs).
+        #[arg(long = "module", alias = "mod")]
+        modules: Vec<String>,
         /// Do not build right away.
         #[arg(long)]
         no_build: bool,
     },
-    /// Update game, engine and mods, then build (per the settings).
+    /// Update game, engine and modules, then build (per the settings).
     Update {
         /// Instance.
         instance: String,
-        /// Resolve mods from scratch.
+        /// Resolve modules from scratch.
         #[arg(long)]
         reset_lock: bool,
     },
@@ -169,7 +169,7 @@ fn main() -> ExitCode {
             name,
             channel,
             linked,
-            mods,
+            modules,
             no_build,
         }) => {
             let source = match linked {
@@ -180,7 +180,7 @@ fn main() -> ExitCode {
                 None => SourceSpec::Managed {
                     channel,
                     engine_ref: watt_core::meta::AUTO.to_owned(),
-                    mods_ref: watt_core::meta::AUTO.to_owned(),
+                    modules_ref: watt_core::meta::AUTO.to_owned(),
                 },
             };
             run_op(
@@ -190,7 +190,7 @@ fn main() -> ExitCode {
                     color: None,
                     group: None,
                     source,
-                    mods,
+                    modules,
                     build: !no_build,
                 },
                 Events::Human,
@@ -303,7 +303,7 @@ fn run_op(request: &OpRequest, events: Events) -> Result<ExitCode> {
         request,
         OpRequest::Build { .. }
             | OpRequest::Update { .. }
-            | OpRequest::Mods { .. }
+            | OpRequest::Modules { .. }
             | OpRequest::Create { .. }
             | OpRequest::Rollback { .. }
             | OpRequest::SetSource { .. }
@@ -325,7 +325,7 @@ fn list() -> Result<()> {
     for card in watt_core::catalog::list_instances(&paths)? {
         let status = watt_core::status::compute(&paths, &card)?;
         println!(
-            "{:<20} {:<28} {:<12} {:>3} mods  {:?}",
+            "{:<20} {:<28} {:<12} {:>3} modules  {:?}",
             card.name,
             card.meta.title(&card.name),
             card.game.version.as_deref().unwrap_or("-"),

@@ -41,7 +41,7 @@ pub enum Readiness {
     },
     /// Something changed since the last build.
     NeedsBuild {
-        /// Why, for people ("3 mods changed", "the game moved to 1a2b3c4").
+        /// Why, for people ("3 modules changed", "the game moved to 1a2b3c4").
         reason: String,
     },
     /// The instance cannot be built as it is.
@@ -165,7 +165,7 @@ fn readiness_for_locked(
         Some(generation) => {
             if generation.environment != lock.environment {
                 return Readiness::NeedsBuild {
-                    reason: "mods changed since the last build".to_owned(),
+                    reason: "modules changed since the last build".to_owned(),
                 };
             }
             // The environment hash does not cover the engine commit: a managed update that only

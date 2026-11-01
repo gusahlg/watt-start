@@ -216,7 +216,7 @@ fn script_success(op_id: &str) -> Vec<Envelope> {
         t,
         Event::OpFinished {
             outcome: OpOutcome::Ok {
-                summary: "Built 1a2b3c4, 3 mods changed".into(),
+                summary: "Built 1a2b3c4, 3 modules changed".into(),
             },
             duration_ms: t,
         },
@@ -315,7 +315,7 @@ fn script_failed(op_id: &str) -> Vec<Envelope> {
         Event::OpFinished {
             outcome: OpOutcome::Failed {
                 phase: Some(Phase::Compile),
-                error: "error[E0308]: mismatched types\n  --> src/world/edits.rs:42:9\ncause: a mod's pin changed without a lock bump".into(),
+                error: "error[E0308]: mismatched types\n  --> src/world/edits.rs:42:9\ncause: a module's pin changed without a lock bump".into(),
                 recovery: vec![
                     Recovery::ResetLock,
                     Recovery::Retry,

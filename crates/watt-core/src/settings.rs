@@ -26,8 +26,9 @@ pub struct Settings {
     pub format: u32,
     /// Rebuild right after an update.
     pub rebuild_after_update: bool,
-    /// Rebuild right after confirming mod changes.
-    pub rebuild_after_mod_change: bool,
+    /// Rebuild right after confirming module changes.
+    #[serde(alias = "rebuild-after-mod-change")]
+    pub rebuild_after_module_change: bool,
     /// Fetch and look for updates when the launcher starts.
     pub check_updates_on_start: bool,
     /// Look for a new watt-start release. Missing in an older file means yes.
@@ -50,7 +51,7 @@ pub struct Settings {
     /// Where each repository is fetched from (missing = the public GitHub repository). A local
     /// checkout path works too, which is handy for developers.
     pub remotes: BTreeMap<Repo, String>,
-    /// Package repositories searched in addition to the managed mods snapshot.
+    /// Package repositories searched in addition to the managed modules snapshot.
     pub extra_repositories: Vec<PathBuf>,
     /// How builds and the game are wrapped (`nix develop` on Nix systems).
     pub wrapper: WrapperSetting,
@@ -96,7 +97,7 @@ impl Default for Settings {
         Self {
             format: SETTINGS_FORMAT,
             rebuild_after_update: true,
-            rebuild_after_mod_change: true,
+            rebuild_after_module_change: true,
             check_updates_on_start: true,
             check_launcher_updates: true,
             backup_before_update: true,
@@ -172,11 +173,24 @@ mod tests {
         s.remotes.insert(Repo::Engine, "/src/voxel-engine".into());
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
-        std::fs::write(&path, "rebuild-after-mod-change = false\nfuture-key = 1\n").unwrap();
+        std::fs::write(
+            &path,
+            "rebuild-after-module-change = false\nfuture-key = 1\n",
+        )
+        .unwrap();
         let s = Settings::load(&path).unwrap();
-        assert!(!s.rebuild_after_mod_change);
+        assert!(!s.rebuild_after_module_change);
         assert!(s.rebuild_after_update);
         assert!(s.check_launcher_updates);
+        // Settings and remotes written before the rename still load.
+        std::fs::write(
+            &path,
+            "rebuild-after-mod-change = false\n[remotes]\nmods = \"/src/pm\"\n",
+        )
+        .unwrap();
+        let old = Settings::load(&path).unwrap();
+        assert!(!old.rebuild_after_module_change);
+        assert_eq!(old.remote(Repo::Modules), "/src/pm");
         assert_eq!(s.remote(Repo::Game), Repo::Game.default_remote());
         assert!(s.effective_jobs() >= 1);
     }

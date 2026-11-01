@@ -118,7 +118,7 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
     let mut keep_dirs: BTreeSet<std::path::PathBuf> = BTreeSet::new();
     let mut keep_game: BTreeSet<String> = BTreeSet::new();
     let mut keep_engine: BTreeSet<String> = BTreeSet::new();
-    let mut keep_mods: BTreeSet<String> = BTreeSet::new();
+    let mut keep_modules: BTreeSet<String> = BTreeSet::new();
 
     fn note_pin(
         paths: &Paths,
@@ -126,13 +126,13 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
         keep_dirs: &mut BTreeSet<std::path::PathBuf>,
         keep_game: &mut BTreeSet<String>,
         keep_engine: &mut BTreeSet<String>,
-        keep_mods: &mut BTreeSet<String>,
+        keep_modules: &mut BTreeSet<String>,
     ) {
         keep_dirs.insert(crate::snapshots::game_snapshot(paths, &pin.game, &pin.engine).dir);
-        keep_dirs.insert(crate::snapshots::mods_snapshot(paths, &pin.mods));
+        keep_dirs.insert(crate::snapshots::modules_snapshot(paths, &pin.modules));
         keep_game.insert(pin.game.clone());
         keep_engine.insert(pin.engine.clone());
-        keep_mods.insert(pin.mods.clone());
+        keep_modules.insert(pin.modules.clone());
     }
 
     let root = paths.pwc.instances();
@@ -147,7 +147,7 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
                         &mut keep_dirs,
                         &mut keep_game,
                         &mut keep_engine,
-                        &mut keep_mods,
+                        &mut keep_modules,
                     );
                 }
                 for generation in &meta.generations {
@@ -158,7 +158,7 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
                             &mut keep_dirs,
                             &mut keep_game,
                             &mut keep_engine,
-                            &mut keep_mods,
+                            &mut keep_modules,
                         );
                     }
                 }
@@ -181,7 +181,7 @@ fn gc_snapshots_impl(paths: &Paths, dry_run: bool) -> Result<usize> {
     if !dry_run {
         crate::git::unpin_except(&paths.mirror(Repo::Game), &keep_game)?;
         crate::git::unpin_except(&paths.mirror(Repo::Engine), &keep_engine)?;
-        crate::git::unpin_except(&paths.mirror(Repo::Mods), &keep_mods)?;
+        crate::git::unpin_except(&paths.mirror(Repo::Modules), &keep_modules)?;
     }
     Ok(removed.len())
 }
@@ -248,7 +248,7 @@ pub(super) fn check_updates(
         let Binding::Managed {
             channel,
             engine_ref,
-            mods_ref,
+            modules_ref,
             pin,
         } = binding
         else {
@@ -256,12 +256,12 @@ pub(super) fn check_updates(
         };
         let game_mirror = paths.mirror(Repo::Game);
         let engine_mirror = paths.mirror(Repo::Engine);
-        let mods_mirror = paths.mirror(Repo::Mods);
+        let modules_mirror = paths.mirror(Repo::Modules);
         let Some(game_sha) = crate::git::resolve(&game_mirror, channel)? else {
             continue;
         };
         let (engine_sha, _) = super::update::resolve_ref(&engine_mirror, engine_ref, channel)?;
-        let (mods_sha, _) = super::update::resolve_ref(&mods_mirror, mods_ref, channel)?;
+        let (modules_sha, _) = super::update::resolve_ref(&modules_mirror, modules_ref, channel)?;
 
         let mut whats_new = Vec::new();
         for (repo, mirror, old, new) in [
@@ -278,10 +278,10 @@ pub(super) fn check_updates(
                 engine_sha.as_str(),
             ),
             (
-                Repo::Mods,
-                &mods_mirror,
-                pin.as_ref().map(|p| p.mods.as_str()),
-                mods_sha.as_str(),
+                Repo::Modules,
+                &modules_mirror,
+                pin.as_ref().map(|p| p.modules.as_str()),
+                modules_sha.as_str(),
             ),
         ] {
             if old == Some(new) {

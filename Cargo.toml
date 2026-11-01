@@ -6,7 +6,7 @@ members = ["crates/watt-core", "crates/watt-start", "crates/xtask"]
 default-members = ["crates/watt-start"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 authors = ["Project Watt Cubed contributors"]

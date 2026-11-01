@@ -33,7 +33,7 @@ mod common;
 mod create;
 mod instance;
 mod maintenance;
-mod mods;
+mod modules;
 mod play;
 mod rollback;
 mod update;
@@ -49,7 +49,7 @@ pub enum SourceSpec {
         /// Engine ref or `auto`.
         engine_ref: String,
         /// Package manager ref or `auto`.
-        mods_ref: String,
+        modules_ref: String,
     },
     /// A game checkout on disk.
     Linked {
@@ -66,8 +66,8 @@ pub enum SourceSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum OpRequest {
-    /// Create an instance; managed sources are downloaded and locked right away. Mods are
-    /// specs like `pwc mod add` takes (`id`, `id@req`, a source directory, a `.pwcmod`); a bare
+    /// Create an instance; managed sources are downloaded and locked right away. Modules are
+    /// specs like `pwc module add` takes (`id`, `id@req`, a source directory, a `.pwcmodule`); a bare
     /// id is required as `*` (always the newest compatible version).
     Create {
         /// Directory name: `[a-z0-9][a-z0-9-]{0,63}`.
@@ -80,14 +80,16 @@ pub enum OpRequest {
         group: Option<String>,
         /// Sources.
         source: SourceSpec,
-        /// Mod specs.
-        mods: Vec<String>,
+        /// Module specs.
+        #[serde(alias = "mods")]
+        modules: Vec<String>,
         /// Build right away.
         build: bool,
     },
-    /// Add and remove mods, relock (restoring `instance.toml` if locking fails), then build when
-    /// `build` (default: `settings.rebuild_after_mod_change`).
-    Mods {
+    /// Add and remove modules, relock (restoring `instance.toml` if locking fails), then build when
+    /// `build` (default: `settings.rebuild_after_module_change`).
+    #[serde(alias = "mods")]
+    Modules {
         /// Instance.
         instance: String,
         /// Specs to add.
@@ -101,9 +103,9 @@ pub enum OpRequest {
         build: Option<bool>,
     },
     /// Managed: fetch, move the pin to the channel's newest revisions, back up worlds when the
-    /// game changes, relock preferring the newest mods. Linked/pwc-default: relock preferring the
-    /// newest mods. Then build when `build` (default: `settings.rebuild_after_update`).
-    /// `reset_lock` resolves from scratch (needed when a mod changed without a version bump; for
+    /// game changes, relock preferring the newest modules. Linked/pwc-default: relock preferring the
+    /// newest modules. Then build when `build` (default: `settings.rebuild_after_update`).
+    /// `reset_lock` resolves from scratch (needed when a module changed without a version bump; for
     /// managed instances that is done automatically, with a warning).
     Update {
         /// Instance.
@@ -194,7 +196,7 @@ impl OpRequest {
     pub fn kind(&self) -> OpKind {
         match self {
             Self::Create { .. } => OpKind::Create,
-            Self::Mods { .. } => OpKind::Mods,
+            Self::Modules { .. } => OpKind::Modules,
             Self::Update { .. } => OpKind::Update,
             Self::Build { .. } => OpKind::Build,
             Self::Play { .. } => OpKind::Play,
@@ -211,7 +213,7 @@ impl OpRequest {
     pub fn instance(&self) -> Option<&str> {
         match self {
             Self::Create { name, .. } => Some(name),
-            Self::Mods { instance, .. }
+            Self::Modules { instance, .. }
             | Self::Update { instance, .. }
             | Self::Build { instance, .. }
             | Self::Play { instance, .. }
@@ -226,7 +228,7 @@ impl OpRequest {
 
     /// The arguments after `watt-start` that run this request by hand: `op --events json --request
     /// <json>`. The GUI writes the same JSON to the worker's stdin instead
-    /// (`op --events json --request-stdin`), so a long mod list is not a command-line argument.
+    /// (`op --events json --request-stdin`), so a long module list is not a command-line argument.
     /// (The human CLI has friendlier subcommands; the JSON form is the stable contract between
     /// the launcher and its own worker.)
     pub fn to_args(&self) -> Vec<String> {
@@ -297,7 +299,7 @@ pub fn run(
 
     let result: Result<String> = match request {
         OpRequest::Create { .. } => create::run(paths, settings, request, reporter),
-        OpRequest::Mods { .. } => mods::run(paths, settings, request, reporter),
+        OpRequest::Modules { .. } => modules::run(paths, settings, request, reporter),
         OpRequest::Update { .. } => update::run(paths, settings, request, reporter),
         OpRequest::Build { .. } => build::run(paths, settings, request, reporter),
         OpRequest::Play { .. } => play::run(paths, settings, request, reporter),
@@ -384,15 +386,34 @@ mod tests {
 
     /// Older launcher builds omit `update`. It deserialises as an empty set and round-trips.
     #[test]
-    fn mods_update_defaults_when_absent() {
-        let missing = r#"{"op":"mods","instance":"survival","add":[],"remove":[],"build":false}"#;
+    fn old_mods_op_requests_still_parse() {
+        let old = r#"{"op":"mods","instance":"s","add":[],"remove":[],"build":false}"#;
+        assert!(matches!(
+            serde_json::from_str::<OpRequest>(old).unwrap(),
+            OpRequest::Modules { .. }
+        ));
+        let old = r#"{"op":"create","name":"s","display_name":null,"color":null,"group":null,
+            "source":{"kind":"pwc-default"},"mods":["pwc.essentials"],"build":false}"#;
+        let OpRequest::Create { modules, .. } = serde_json::from_str::<OpRequest>(old).unwrap()
+        else {
+            panic!("expected Create");
+        };
+        assert_eq!(modules, ["pwc.essentials"]);
+        let kind: crate::events::OpKind = serde_json::from_str("\"mods\"").unwrap();
+        assert_eq!(kind, crate::events::OpKind::Modules);
+    }
+
+    #[test]
+    fn modules_update_defaults_when_absent() {
+        let missing =
+            r#"{"op":"modules","instance":"survival","add":[],"remove":[],"build":false}"#;
         let parsed: OpRequest = serde_json::from_str(missing).expect("update is optional");
         match &parsed {
-            OpRequest::Mods { update, build, .. } => {
+            OpRequest::Modules { update, build, .. } => {
                 assert!(update.is_empty());
                 assert_eq!(*build, Some(false));
             }
-            other => panic!("expected Mods, got {other:?}"),
+            other => panic!("expected Modules, got {other:?}"),
         }
         let again: OpRequest =
             serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();

@@ -119,9 +119,10 @@ pub enum Event {
 pub enum OpKind {
     /// Create an instance.
     Create,
-    /// Add/remove mods (then build, per settings).
-    Mods,
-    /// Update game, engine and mods (then build, per settings).
+    /// Add/remove modules (then build, per settings).
+    #[serde(alias = "mods")]
+    Modules,
+    /// Update game, engine and modules (then build, per settings).
     Update,
     /// Build (or rebuild with `--force`).
     Build,
@@ -146,7 +147,7 @@ impl OpKind {
     pub fn verb(self) -> &'static str {
         match self {
             Self::Create => "Creating",
-            Self::Mods => "Applying mod changes",
+            Self::Modules => "Applying module changes",
             Self::Update => "Updating",
             Self::Build => "Building",
             Self::Play => "Starting",
@@ -166,13 +167,13 @@ impl OpKind {
 pub enum Phase {
     /// Reading state, taking locks, checking inputs.
     Prepare,
-    /// Downloading game, engine and mods (git fetch).
+    /// Downloading game, engine and modules (git fetch).
     Fetch,
     /// Creating source snapshots (git clone + checkout).
     Checkout,
     /// Copying the instance's worlds aside before an update changes the game.
     Backup,
-    /// Resolving mods and writing `pwc.lock`.
+    /// Resolving modules and writing `pwc.lock`.
     Lock,
     /// Identifying the Rust toolchain (`rustc -vV`, possibly inside `nix develop`).
     Toolchain,
@@ -198,7 +199,7 @@ impl Phase {
             Self::Fetch => "Downloading updates",
             Self::Checkout => "Unpacking sources",
             Self::Backup => "Backing up worlds",
-            Self::Lock => "Resolving mods",
+            Self::Lock => "Resolving modules",
             Self::Toolchain => "Waking up the toolchain",
             Self::WaitForBuild => "Waiting for another build",
             Self::Compile => "Compiling",
@@ -240,7 +241,7 @@ pub enum PhaseOutcome {
 pub enum OpOutcome {
     /// Done.
     Ok {
-        /// One line for the user ("Updated to main @ 1a2b3c4, 3 mods changed").
+        /// One line for the user ("Updated to main @ 1a2b3c4, 3 modules changed").
         summary: String,
     },
     /// Stopped on request.
@@ -264,7 +265,7 @@ pub enum OpOutcome {
 pub enum Recovery {
     /// Run the op again.
     Retry,
-    /// Drop the current lock and resolve from scratch (a mod changed without a version bump).
+    /// Drop the current lock and resolve from scratch (a module changed without a version bump).
     ResetLock,
     /// Return to the previous working generation.
     Rollback,

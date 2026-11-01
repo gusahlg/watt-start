@@ -11,7 +11,7 @@ use watt_core::meta::{Binding, short};
 use watt_core::ops::OpRequest;
 use watt_core::status::Readiness;
 
-use super::instance_tabs::{mod_count, op_result_word, paint_ellipsis};
+use super::instance_tabs::{module_count, op_result_word, paint_ellipsis};
 use super::{App, InstanceTab, OpSlot};
 use crate::gui::backend::InstanceEntry;
 use crate::gui::forge::ForgeStyle;
@@ -101,7 +101,12 @@ impl App {
             .size()
             .y;
         let meta = entry
-            .map(|e| meta_line(e, mod_count(e, self.mods_ui.shows_libraries(&e.card.name))))
+            .map(|e| {
+                meta_line(
+                    e,
+                    module_count(e, self.modules_ui.shows_libraries(&e.card.name)),
+                )
+            })
             .unwrap_or_else(|| pending_meta(self.ops.get(name).map(OpSlot::kind)));
         let meta_h = ui
             .painter()
@@ -467,11 +472,11 @@ impl App {
         let (strip_outer, _) =
             ui.allocate_exact_size(egui::vec2(strip_w, 40.0), egui::Sense::hover());
         let strip = strip_outer.shrink2(egui::vec2(24.0, 0.0));
-        let count = mod_count(entry, self.mods_ui.shows_libraries(&entry.card.name));
+        let count = module_count(entry, self.modules_ui.shows_libraries(&entry.card.name));
         let staged = self
-            .staged_mods
+            .staged_modules
             .get(&name)
-            .is_some_and(|mods| !mods.is_empty());
+            .is_some_and(|modules| !modules.is_empty());
         let mut tabs_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(strip)
@@ -482,7 +487,7 @@ impl App {
             &mut self.instance_tab,
             &[
                 (InstanceTab::Overview, "Overview", None, false),
-                (InstanceTab::Mods, "Mods", Some(count), staged),
+                (InstanceTab::Modules, "Modules", Some(count), staged),
                 (InstanceTab::Builds, "Builds", None, false),
                 (InstanceTab::Log, "Log", None, false),
                 (InstanceTab::InstanceSettings, "Settings", None, false),
@@ -506,7 +511,7 @@ impl App {
         body.set_clip_rect(content);
         match self.instance_tab {
             InstanceTab::Overview => self.overview_tab(&mut body, entry),
-            InstanceTab::Mods => self.mods_tab(&mut body, entry),
+            InstanceTab::Modules => self.modules_tab(&mut body, entry),
             InstanceTab::Builds => self.builds_tab(&mut body, entry),
             InstanceTab::Log => self.log_tab(&mut body, entry),
             InstanceTab::InstanceSettings => self.instance_settings_tab(&mut body, entry),
@@ -861,7 +866,7 @@ fn rounded_span(rect: egui::Rect, radius: f32, x: f32) -> (f32, f32) {
     (rect.top() + dy, rect.bottom() - dy)
 }
 
-fn meta_line(entry: &InstanceEntry, mods: usize) -> String {
+fn meta_line(entry: &InstanceEntry, modules: usize) -> String {
     let mut line = source_chip(entry);
     if let Some(version) = &entry.card.game.version {
         let _ = write!(line, " · Game {version}");
@@ -869,10 +874,10 @@ fn meta_line(entry: &InstanceEntry, mods: usize) -> String {
     if let Some(engine) = &entry.card.game.engine_revision {
         let _ = write!(line, " · Engine {}", short(engine));
     }
-    if mods == 1 {
-        line.push_str(" · 1 mod");
+    if modules == 1 {
+        line.push_str(" · 1 module");
     } else {
-        let _ = write!(line, " · {mods} mods");
+        let _ = write!(line, " · {modules} modules");
     }
     let _ = write!(line, " · {}", entry.card.manifest.profile.as_str());
     line

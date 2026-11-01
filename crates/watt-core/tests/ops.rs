@@ -11,14 +11,20 @@ use watt_core::ops::{OpRequest, SourceSpec};
 use watt_core::status::{self, Readiness};
 use watt_core::{catalog, locks::FileLock, paths::InstancePaths};
 
-fn create(world: &World, name: &str, source: SourceSpec, mods: &[&str], build: bool) -> OpOutcome {
+fn create(
+    world: &World,
+    name: &str,
+    source: SourceSpec,
+    modules: &[&str],
+    build: bool,
+) -> OpOutcome {
     let (outcome, _sink) = world.run(&OpRequest::Create {
         name: name.to_owned(),
         display_name: None,
         color: None,
         group: None,
         source,
-        mods: mods.iter().map(|m| m.to_owned().to_owned()).collect(),
+        modules: modules.iter().map(|m| m.to_owned().to_owned()).collect(),
         build,
     });
     outcome
@@ -117,7 +123,7 @@ fn create_linked_source_builds_too() {
 }
 
 #[test]
-fn mods_add_remove_relocks_and_restores_on_failure() {
+fn modules_add_remove_relocks_and_restores_on_failure() {
     let world = World::new();
     world.add_package("pwc.hotbar", "1.0.0", &[]);
     world.add_package("pwc.inventory", "1.0.0", &[]);
@@ -130,7 +136,7 @@ fn mods_add_remove_relocks_and_restores_on_failure() {
     ));
 
     // A good add/remove.
-    let (outcome, _sink) = world.run(&OpRequest::Mods {
+    let (outcome, _sink) = world.run(&OpRequest::Modules {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec!["pwc.hotbar".to_owned()],
@@ -143,7 +149,7 @@ fn mods_add_remove_relocks_and_restores_on_failure() {
     assert_eq!(card.packages[0].id, "pwc.inventory");
 
     // Adding an id nothing provides fails at lock time; instance.toml is restored.
-    let (outcome, _sink) = world.run(&OpRequest::Mods {
+    let (outcome, _sink) = world.run(&OpRequest::Modules {
         instance: "survival".to_owned(),
         add: vec!["nope.nope".to_owned()],
         remove: vec![],
@@ -155,7 +161,7 @@ fn mods_add_remove_relocks_and_restores_on_failure() {
     assert!(
         !card
             .manifest
-            .mods
+            .modules
             .iter()
             .any(|(id, _)| id.as_str() == "nope.nope")
     );
@@ -184,7 +190,7 @@ fn update_picks_up_a_newer_package_version() {
         reset_lock: false,
     });
     let summary = assert_ok(&outcome);
-    assert!(summary.contains("mod"), "{summary}");
+    assert!(summary.contains("module"), "{summary}");
 
     let after = catalog::load_instance(&world.paths, "dev").unwrap();
     assert_eq!(after.packages[0].version, "1.1.0");
@@ -290,7 +296,7 @@ fn rollback_restores_the_previous_generations_lock() {
         .generations[0]
         .id;
 
-    let (outcome, _sink) = world.run(&OpRequest::Mods {
+    let (outcome, _sink) = world.run(&OpRequest::Modules {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec![],
@@ -312,10 +318,10 @@ fn rollback_restores_the_previous_generations_lock() {
     let rolled_back = catalog::load_instance(&world.paths, "survival").unwrap();
     assert_eq!(rolled_back.packages.len(), 1);
     assert_eq!(rolled_back.packages[0].id, "pwc.hotbar");
-    // The wanted mods come back too, so the next build keeps the rolled-back set.
+    // The wanted modules come back too, so the next build keeps the rolled-back set.
     let wanted: Vec<String> = rolled_back
         .manifest
-        .mods
+        .modules
         .keys()
         .map(ToString::to_string)
         .collect();
@@ -336,7 +342,7 @@ fn rollback_restores_the_previous_generations_lock() {
     });
     assert_ok(&outcome);
     let forward = catalog::load_instance(&world.paths, "survival").unwrap();
-    assert_eq!(forward.manifest.mods.len(), 2);
+    assert_eq!(forward.manifest.modules.len(), 2);
     assert_eq!(forward.packages.len(), 2);
 }
 
@@ -465,7 +471,7 @@ fn catalog_lists_instances_with_packages_and_game_info() {
 }
 
 #[test]
-fn status_is_needs_build_after_a_mod_change() {
+fn status_is_needs_build_after_a_module_change() {
     let world = World::new();
     world.add_package("pwc.hotbar", "1.0.0", &[]);
     world.add_package("pwc.inventory", "1.0.0", &[]);
@@ -477,7 +483,7 @@ fn status_is_needs_build_after_a_mod_change() {
         true,
     ));
 
-    let (outcome, _sink) = world.run(&OpRequest::Mods {
+    let (outcome, _sink) = world.run(&OpRequest::Modules {
         instance: "survival".to_owned(),
         add: vec!["pwc.inventory".to_owned()],
         remove: vec![],
@@ -495,13 +501,13 @@ fn status_is_needs_build_after_a_mod_change() {
     );
 }
 
-// --- Managed-source tests: local git checkouts stand in for the game/engine/mods mirrors. ---
+// --- Managed-source tests: local git checkouts stand in for the game/engine/modules mirrors. ---
 
 fn managed(channel: &str) -> SourceSpec {
     SourceSpec::Managed {
         channel: channel.to_owned(),
         engine_ref: watt_core::meta::AUTO.to_owned(),
-        mods_ref: watt_core::meta::AUTO.to_owned(),
+        modules_ref: watt_core::meta::AUTO.to_owned(),
     }
 }
 
@@ -509,7 +515,7 @@ fn managed(channel: &str) -> SourceSpec {
 fn create_managed_instance_downloads_and_locks() {
     let mut world = World::new();
     let remotes = world.add_managed_remotes();
-    world.add_remote_package(&remotes.mods, "pwc.hotbar", "1.0.0", &[]);
+    world.add_remote_package(&remotes.modules, "pwc.hotbar", "1.0.0", &[]);
 
     let outcome = create(&world, "main", managed("main"), &["pwc.hotbar"], true);
     let summary = assert_ok(&outcome);
@@ -592,7 +598,7 @@ fn status_reports_needs_build_when_only_the_engine_changed() {
         Readiness::Ready { .. }
     ));
 
-    // Move only the engine forward; the game and mods stay put, so the environment hash (which
+    // Move only the engine forward; the game and modules stay put, so the environment hash (which
     // never covers the engine) is unchanged.
     std::fs::write(remotes.engine.join("CHANGED"), "x").unwrap();
     support::commit_all(&remotes.engine, "engine: a change");
@@ -761,7 +767,7 @@ fn rollback_relocks_when_a_generations_package_is_missing_from_the_store() {
     world.add_package("pwc.inventory", "1.0.0", &[]);
     assert_ok(
         &world
-            .run(&OpRequest::Mods {
+            .run(&OpRequest::Modules {
                 instance: "survival".to_owned(),
                 add: vec!["pwc.inventory".to_owned()],
                 remove: vec!["pwc.hotbar".to_owned()],
@@ -815,7 +821,7 @@ fn build_fails_when_pwc_lock_changed_underneath_it() {
     world.add_package("pwc.inventory", "1.0.0", &[]);
     assert_ok(
         &world
-            .run(&OpRequest::Mods {
+            .run(&OpRequest::Modules {
                 instance: "survival".to_owned(),
                 add: vec!["pwc.inventory".to_owned()],
                 remove: vec![],
@@ -845,9 +851,9 @@ fn build_fails_when_pwc_lock_changed_underneath_it() {
     );
 }
 
-/// `Mods.update` is the set `LockOptions` prefers newest for. A sibling package stays pinned.
+/// `Modules.update` is the set `LockOptions` prefers newest for. A sibling package stays pinned.
 #[test]
-fn mods_update_bumps_only_the_named_package() {
+fn modules_update_bumps_only_the_named_package() {
     let world = World::new();
     world.add_package("pwc.hotbar", "1.0.0", &[]);
     world.add_package("pwc.inventory", "1.0.0", &[]);
@@ -861,7 +867,7 @@ fn mods_update_bumps_only_the_named_package() {
     world.add_package("pwc.hotbar", "1.1.0", &[]);
     world.add_package("pwc.inventory", "1.1.0", &[]);
 
-    let (outcome, _sink) = world.run(&OpRequest::Mods {
+    let (outcome, _sink) = world.run(&OpRequest::Modules {
         instance: "survival".to_owned(),
         add: vec![],
         remove: vec![],

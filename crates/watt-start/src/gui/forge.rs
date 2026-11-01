@@ -1626,7 +1626,7 @@ fn action_headline(op: Option<OpKind>) -> &'static str {
     match op {
         Some(OpKind::Build) => "Building",
         Some(OpKind::Update) => "Updating",
-        Some(OpKind::Mods) => "Applying mod changes",
+        Some(OpKind::Modules) => "Applying module changes",
         Some(OpKind::Create) => "Creating",
         Some(OpKind::Duplicate) => "Copying",
         Some(OpKind::Rollback) => "Rolling back",
@@ -1644,8 +1644,8 @@ fn success_headline(view: &OpView, style: &ForgeStyle) -> String {
     if play && style.ready {
         return ready_headline(&style.title, true);
     }
-    if play && !style.ready && matches!(view.op, Some(OpKind::Mods)) {
-        return "Mods applied — build needed".to_owned();
+    if play && !style.ready && matches!(view.op, Some(OpKind::Modules)) {
+        return "Modules applied — build needed".to_owned();
     }
     "Done".to_owned()
 }
@@ -1695,7 +1695,7 @@ fn offers_play(op: Option<OpKind>) -> bool {
         Some(
             OpKind::Create
                 | OpKind::Update
-                | OpKind::Mods
+                | OpKind::Modules
                 | OpKind::Build
                 | OpKind::Rollback
                 | OpKind::SetSource

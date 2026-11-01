@@ -7,7 +7,7 @@ use watt_core::meta::Binding;
 use watt_core::ops::OpRequest;
 
 use super::dialogs::{self, FormAction};
-use super::{App, MainView, ModPreset, SourceChoice};
+use super::{App, MainView, ModulePreset, SourceChoice};
 use crate::gui::backend::Loaded;
 use crate::gui::theme;
 use crate::gui::widgets::{self, Button, Variant};
@@ -19,7 +19,7 @@ pub(crate) struct NewInstanceState {
     pub display_name: String,
     pub color: egui::Color32,
     pub source: SourceChoice,
-    pub mod_preset: ModPreset,
+    pub module_preset: ModulePreset,
     pub build_now: bool,
     /// The directory field is revealed.
     pub edit_dir: bool,
@@ -94,7 +94,7 @@ impl App {
             display_name: String::new(),
             color: theme::VOLT,
             source: dialogs::fresh_managed(&channel),
-            mod_preset: ModPreset::Essentials,
+            module_preset: ModulePreset::Essentials,
             build_now: true,
             edit_dir: false,
             typed: false,
@@ -113,12 +113,12 @@ impl App {
                 Binding::Managed {
                     channel,
                     engine_ref,
-                    mods_ref,
+                    modules_ref,
                     ..
                 } => SourceChoice::Managed {
                     channel: channel.clone(),
                     engine_ref: engine_ref.clone(),
-                    mods_ref: mods_ref.clone(),
+                    modules_ref: modules_ref.clone(),
                 },
                 Binding::Linked {
                     pwc_source,
@@ -216,7 +216,7 @@ impl App {
             color: Some(theme::to_hex_color(state.color)),
             group: None,
             source: state.source.to_spec(),
-            mods: state.mod_preset.specs(),
+            modules: state.module_preset.specs(),
             build: state.build_now,
         };
         if self.start_op(name.clone(), request) {
@@ -385,8 +385,8 @@ fn new_instance_body(
     }
 
     ui.add_space(6.0);
-    dialogs::field_label(ui, "Mods");
-    if mod_preset_row(ui, &mut state.mod_preset) {
+    dialogs::field_label(ui, "Modules");
+    if module_preset_row(ui, &mut state.module_preset) {
         action.interacted = true;
     }
 
@@ -542,15 +542,15 @@ fn source_cards(
 }
 
 /// Compact preset picker: one segmented control and the selected preset's description.
-fn mod_preset_row(ui: &mut egui::Ui, preset: &mut ModPreset) -> bool {
+fn module_preset_row(ui: &mut egui::Ui, preset: &mut ModulePreset) -> bool {
     let mut idx = match *preset {
-        ModPreset::Essentials => 0,
-        ModPreset::EssentialsDevToolkit => 1,
-        ModPreset::Vanilla => 2,
+        ModulePreset::Essentials => 0,
+        ModulePreset::EssentialsDevToolkit => 1,
+        ModulePreset::Vanilla => 2,
     };
     let changed = widgets::segmented(
         ui,
-        "new-instance-mods",
+        "new-instance-modules",
         &mut idx,
         &[
             ("Essentials", None),
@@ -560,15 +560,15 @@ fn mod_preset_row(ui: &mut egui::Ui, preset: &mut ModPreset) -> bool {
     );
     if changed {
         *preset = match idx {
-            1 => ModPreset::EssentialsDevToolkit,
-            2 => ModPreset::Vanilla,
-            _ => ModPreset::Essentials,
+            1 => ModulePreset::EssentialsDevToolkit,
+            2 => ModulePreset::Vanilla,
+            _ => ModulePreset::Essentials,
         };
     }
     let description = match *preset {
-        ModPreset::Essentials => "The mods most worlds want.",
-        ModPreset::EssentialsDevToolkit => "Essentials, plus overlays and debug tools.",
-        ModPreset::Vanilla => "The game as shipped, with no mods.",
+        ModulePreset::Essentials => "The modules most worlds want.",
+        ModulePreset::EssentialsDevToolkit => "Essentials, plus overlays and debug tools.",
+        ModulePreset::Vanilla => "The game as shipped, with no modules.",
     };
     let p = theme::palette(ui.ctx());
     ui.label(
@@ -614,18 +614,18 @@ mod tests {
     fn linked_to_latest_does_not_panic() {
         let mut source = SourceChoice::Linked {
             path: "/tmp/game".to_owned(),
-            repositories: vec!["/tmp/mods".into()],
+            repositories: vec!["/tmp/modules".into()],
         };
         set_source_kind(&mut source, SourceKind::Managed, None, "main");
         match source {
             SourceChoice::Managed {
                 channel,
                 engine_ref,
-                mods_ref,
+                modules_ref,
             } => {
                 assert_eq!(channel, "main");
                 assert_eq!(engine_ref, watt_core::meta::AUTO);
-                assert_eq!(mods_ref, watt_core::meta::AUTO);
+                assert_eq!(modules_ref, watt_core::meta::AUTO);
             }
             other => panic!("expected a managed source, got {other:?}"),
         }
@@ -636,7 +636,7 @@ mod tests {
         let original = SourceChoice::Managed {
             channel: "experimental".to_owned(),
             engine_ref: "abc".to_owned(),
-            mods_ref: "def".to_owned(),
+            modules_ref: "def".to_owned(),
         };
         let mut source = original.clone();
         set_source_kind(&mut source, SourceKind::Managed, Some(&original), "main");
@@ -666,7 +666,7 @@ mod tests {
                 color: None,
                 group: None,
                 source: watt_core::ops::SourceSpec::PwcDefault,
-                mods: Vec::new(),
+                modules: Vec::new(),
                 build: false,
             },
         );

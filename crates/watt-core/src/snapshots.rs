@@ -1,8 +1,8 @@
 //! Source snapshots: immutable, content-addressed checkouts that instances build from.
 //!
 //! A game snapshot is `sources/v1/pwc-<game12>-<engine12>/` holding `project_watt_cubed/` and
-//! `voxel-engine/` side by side (the game's `Cargo.toml` uses `path = "../voxel-engine"`). A mods
-//! snapshot is `sources/v1/mods-<mods12>/pwc-package-manager/`. Both are standalone local clones
+//! `voxel-engine/` side by side (the game's `Cargo.toml` uses `path = "../voxel-engine"`). A modules
+//! snapshot is `sources/v1/modules-<m12>/pwc-package-manager/`. Both are standalone local clones
 //! of the mirrors (`git::clone_at`), detached at the pinned commit.
 //!
 //! The same revisions always give the same path, so instances pinned alike share one snapshot
@@ -51,10 +51,18 @@ pub fn game_snapshot(paths: &Paths, game_sha: &str, engine_sha: &str) -> GameSna
     }
 }
 
-/// The mods snapshot directory for this revision (`sources/v1/mods-<m12>`; the checkout is its
+/// The modules snapshot directory for this revision (`sources/v1/modules-<m12>`; the checkout is its
 /// `pwc-package-manager/` child).
-pub fn mods_snapshot(paths: &Paths, mods_sha: &str) -> PathBuf {
-    paths.sources().join(format!("mods-{}", key(mods_sha)))
+///
+/// Snapshots made before the mods-to-modules rename live in `mods-<m12>`; one of those is used
+/// as-is (re-cloning a pinned revision for a new directory name would be wasted work).
+pub fn modules_snapshot(paths: &Paths, modules_sha: &str) -> PathBuf {
+    let sources = paths.sources();
+    let legacy = sources.join(format!("mods-{}", key(modules_sha)));
+    if legacy.is_dir() {
+        return legacy;
+    }
+    sources.join(format!("modules-{}", key(modules_sha)))
 }
 
 /// The 12-character key of a commit hash.
@@ -197,17 +205,17 @@ pub fn ensure_game(
 }
 
 /// [`ensure_game`] for the package manager snapshot; returns the snapshot directory.
-pub fn ensure_mods(
+pub fn ensure_modules(
     paths: &Paths,
-    mods_sha: &str,
+    modules_sha: &str,
     on_progress: &mut dyn FnMut(Repo, GitProgress),
     on_line: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
     let _lock = FileLock::acquire(&paths.git_lock())?;
-    let dir = mods_snapshot(paths, mods_sha);
-    let checkout = dir.join(Repo::Mods.dir_name());
+    let dir = modules_snapshot(paths, modules_sha);
+    let checkout = dir.join(Repo::Modules.dir_name());
 
-    if is_complete(&dir) && checkout_matches(&checkout, mods_sha) {
+    if is_complete(&dir) && checkout_matches(&checkout, modules_sha) {
         return Ok(dir);
     }
 
@@ -216,27 +224,27 @@ pub fn ensure_mods(
     clear_leftovers(&sources, &dir, &key)?;
     let tmp = fresh_tmp_dir(&sources, &key)?;
 
-    crate::git::pin(&paths.mirror(Repo::Mods), mods_sha)
-        .with_context(|| format!("cannot pin the mods at {mods_sha}"))?;
+    crate::git::pin(&paths.mirror(Repo::Modules), modules_sha)
+        .with_context(|| format!("cannot pin the modules at {modules_sha}"))?;
 
-    let tmp_checkout = tmp.join(Repo::Mods.dir_name());
+    let tmp_checkout = tmp.join(Repo::Modules.dir_name());
     crate::git::clone_at(
-        &paths.mirror(Repo::Mods),
-        mods_sha,
+        &paths.mirror(Repo::Modules),
+        modules_sha,
         &tmp_checkout,
-        &mut |p| on_progress(Repo::Mods, p),
+        &mut |p| on_progress(Repo::Modules, p),
         on_line,
     )
-    .with_context(|| format!("cannot check out the mods at {mods_sha}"))?;
+    .with_context(|| format!("cannot check out the modules at {modules_sha}"))?;
 
-    if !checkout_matches(&tmp_checkout, mods_sha) {
+    if !checkout_matches(&tmp_checkout, modules_sha) {
         bail!(
-            "the mods checkout at {} is not clean at {mods_sha}",
+            "the modules checkout at {} is not clean at {modules_sha}",
             tmp_checkout.display()
         );
     }
 
-    crate::paths::write_atomic(&tmp.join(COMPLETE), format!("{mods_sha}\n").as_bytes())?;
+    crate::paths::write_atomic(&tmp.join(COMPLETE), format!("{modules_sha}\n").as_bytes())?;
 
     std::fs::rename(&tmp, &dir)
         .with_context(|| format!("cannot rename {} to {}", tmp.display(), dir.display()))?;

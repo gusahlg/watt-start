@@ -1,6 +1,6 @@
 //! Launcher metadata of one instance: `<instance>/watt-start/meta.toml`.
 //!
-//! pwc owns `instance.toml` (the wanted mods) and `pwc.lock` (the resolved set); this file holds
+//! pwc owns `instance.toml` (the wanted modules) and `pwc.lock` (the resolved set); this file holds
 //! what only the launcher knows: how the instance is presented, where its sources come from (the
 //! [`Binding`], which is the truth the lock is derived from) and its [`Generation`]s, the
 //! known-good states it can roll back to.
@@ -44,7 +44,7 @@ pub struct Meta {
     pub created: Option<u64>,
     /// Unix seconds.
     pub last_played: Option<u64>,
-    /// Where the game, engine and mods come from.
+    /// Where the game, engine and modules come from.
     pub source: Binding,
     /// Known-good states, newest first.
     pub generations: Vec<Generation>,
@@ -63,7 +63,7 @@ pub enum Binding {
     #[default]
     PwcDefault,
     /// A game checkout on disk that the launcher builds but never modifies (developers).
-    /// Update = newest compatible mods + rebuild; pulling the checkout is up to its owner.
+    /// Update = newest compatible modules + rebuild; pulling the checkout is up to its owner.
     Linked {
         /// The game checkout (its `../voxel-engine` sibling comes with it).
         pwc_source: PathBuf,
@@ -81,8 +81,8 @@ pub enum Binding {
         #[serde(default = "auto")]
         engine_ref: String,
         /// Package manager branch, tag or revision; `auto` as for the engine.
-        #[serde(default = "auto")]
-        mods_ref: String,
+        #[serde(default = "auto", alias = "mods-ref", alias = "mods_ref")]
+        modules_ref: String,
         /// The exact revisions in use (None until the first update/create finished).
         #[serde(default)]
         pin: Option<Pin>,
@@ -106,7 +106,7 @@ fn auto() -> String {
     AUTO.to_owned()
 }
 
-/// The `engine-ref`/`mods-ref` value that follows the channel.
+/// The `engine-ref`/`modules-ref` value that follows the channel.
 pub const AUTO: &str = "auto";
 
 /// Exact revisions of the three repositories.
@@ -118,7 +118,8 @@ pub struct Pin {
     /// Engine commit.
     pub engine: String,
     /// Package manager commit.
-    pub mods: String,
+    #[serde(alias = "mods")]
+    pub modules: String,
     /// The game ref it was resolved from ("main").
     #[serde(default)]
     pub game_ref: String,
@@ -126,8 +127,8 @@ pub struct Pin {
     #[serde(default)]
     pub engine_ref: String,
     /// The package manager ref it was resolved from.
-    #[serde(default)]
-    pub mods_ref: String,
+    #[serde(default, alias = "mods-ref", alias = "mods_ref")]
+    pub modules_ref: String,
 }
 
 impl Pin {
@@ -285,14 +286,14 @@ mod tests {
             m.source = Binding::Managed {
                 channel: "main".into(),
                 engine_ref: AUTO.into(),
-                mods_ref: AUTO.into(),
+                modules_ref: AUTO.into(),
                 pin: Some(Pin {
                     game: "a".repeat(40),
                     engine: "b".repeat(40),
-                    mods: "c".repeat(40),
+                    modules: "c".repeat(40),
                     game_ref: "main".into(),
                     engine_ref: "main".into(),
-                    mods_ref: "main".into(),
+                    modules_ref: "main".into(),
                 }),
             };
             m.generations.push(Generation {
@@ -322,10 +323,38 @@ mod tests {
             Binding::Managed {
                 channel: "mp-fix".into(),
                 engine_ref: AUTO.into(),
-                mods_ref: AUTO.into(),
+                modules_ref: AUTO.into(),
                 pin: None
             }
         );
+
+        // A file written before the mods-to-modules rename: `mods-ref`, `mods_ref`, `pin.mods`.
+        let old = format!(
+            "format = 1\n[source]\nkind = \"managed\"\nchannel = \"main\"\nmods_ref = \"v1\"\n\
+             [source.pin]\ngame = \"{a}\"\nengine = \"{b}\"\nmods = \"{c}\"\nmods-ref = \"v1\"\n",
+            a = "a".repeat(40),
+            b = "b".repeat(40),
+            c = "c".repeat(40)
+        );
+        std::fs::write(InstancePaths::new(dir).meta(), old).unwrap();
+        let loaded = Meta::load(dir).unwrap();
+        let Binding::Managed {
+            modules_ref, pin, ..
+        } = &loaded.source
+        else {
+            panic!("expected a managed binding");
+        };
+        assert_eq!(modules_ref, "v1");
+        let pin = pin.as_ref().unwrap();
+        assert_eq!(pin.modules, "c".repeat(40));
+        assert_eq!(pin.modules_ref, "v1");
+        // Saved again, the new keys are written and the old ones are gone.
+        let text = toml::to_string(&loaded).unwrap();
+        assert!(
+            text.contains("modules = ") && text.contains("modules-ref"),
+            "{text}"
+        );
+        assert!(!text.contains("mods"), "{text}");
 
         std::fs::write(InstancePaths::new(dir).meta(), "format = 9\n").unwrap();
         assert!(

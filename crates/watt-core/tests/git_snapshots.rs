@@ -75,6 +75,25 @@ fn no_progress() -> (impl FnMut(git::GitProgress), impl FnMut(String)) {
     (|_p: git::GitProgress| {}, |_l: String| {})
 }
 
+/// A snapshot made before the rename (`mods-<key>`) is found; a new one is `modules-<key>`.
+#[test]
+fn an_older_mods_snapshot_directory_is_still_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_in(tmp.path());
+    let sha = "d".repeat(40);
+    assert_eq!(
+        snapshots::modules_snapshot(&paths, &sha),
+        paths
+            .sources()
+            .join(format!("modules-{}", snapshots::key(&sha)))
+    );
+    let legacy = paths
+        .sources()
+        .join(format!("mods-{}", snapshots::key(&sha)));
+    std::fs::create_dir_all(&legacy).unwrap();
+    assert_eq!(snapshots::modules_snapshot(&paths, &sha), legacy);
+}
+
 #[test]
 fn version_reports_something() {
     let out = git::version().expect("git must be installed to run these tests");
@@ -595,17 +614,17 @@ fn ensure_game_recreates_a_modified_checkout() {
 }
 
 #[test]
-fn ensure_mods_creates_a_complete_snapshot() {
+fn ensure_modules_creates_a_complete_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
-    let mods_src = tmp.path().join("mods");
-    init_repo(&mods_src);
-    let mods_sha = commit(&mods_src, "a.txt", "1", "mods init");
+    let modules_src = tmp.path().join("modules");
+    init_repo(&modules_src);
+    let modules_sha = commit(&modules_src, "a.txt", "1", "modules init");
 
     let paths = paths_in(tmp.path());
     let (mut p, mut l) = no_progress();
     git::ensure_mirror(
-        &paths.mirror(Repo::Mods),
-        &mods_src.to_string_lossy(),
+        &paths.mirror(Repo::Modules),
+        &modules_src.to_string_lossy(),
         &mut p,
         &mut l,
     )
@@ -613,16 +632,18 @@ fn ensure_mods_creates_a_complete_snapshot() {
 
     let mut on_progress = |_repo: Repo, _p: git::GitProgress| {};
     let mut on_line = |_l: String| {};
-    let dir = snapshots::ensure_mods(&paths, &mods_sha, &mut on_progress, &mut on_line).unwrap();
-    assert_eq!(dir, snapshots::mods_snapshot(&paths, &mods_sha));
+    let dir =
+        snapshots::ensure_modules(&paths, &modules_sha, &mut on_progress, &mut on_line).unwrap();
+    assert_eq!(dir, snapshots::modules_snapshot(&paths, &modules_sha));
     assert!(snapshots::is_complete(&dir));
-    let checkout = dir.join(Repo::Mods.dir_name());
+    let checkout = dir.join(Repo::Modules.dir_name());
     let (head, clean) = git::head_and_clean(&checkout).unwrap();
-    assert_eq!(head, mods_sha);
+    assert_eq!(head, modules_sha);
     assert!(clean);
 
     // Idempotent.
-    let dir2 = snapshots::ensure_mods(&paths, &mods_sha, &mut on_progress, &mut on_line).unwrap();
+    let dir2 =
+        snapshots::ensure_modules(&paths, &modules_sha, &mut on_progress, &mut on_line).unwrap();
     assert_eq!(dir, dir2);
 }
 
@@ -634,7 +655,7 @@ fn list_reports_every_snapshot() {
     std::fs::create_dir_all(sources.join("pwc-aaa-bbb")).unwrap();
     std::fs::write(sources.join("pwc-aaa-bbb").join("x"), "12345").unwrap();
     std::fs::write(sources.join("pwc-aaa-bbb").join(snapshots::COMPLETE), "").unwrap();
-    std::fs::create_dir_all(sources.join("mods-ccc")).unwrap();
+    std::fs::create_dir_all(sources.join("modules-ccc")).unwrap();
     // Hidden leftovers are not snapshots.
     std::fs::create_dir_all(sources.join(".tmp-xyz-1")).unwrap();
 
@@ -646,7 +667,10 @@ fn list_reports_every_snapshot() {
         .unwrap();
     assert!(complete.complete);
     assert_eq!(complete.bytes, 5);
-    let incomplete = list.iter().find(|s| s.dir.ends_with("mods-ccc")).unwrap();
+    let incomplete = list
+        .iter()
+        .find(|s| s.dir.ends_with("modules-ccc"))
+        .unwrap();
     assert!(!incomplete.complete);
 }
 

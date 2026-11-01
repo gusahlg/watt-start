@@ -470,7 +470,11 @@ impl App {
                     .map(short)
                     .unwrap_or("—"),
             );
-            kv(ui, "Mod API", entry.card.game.api.as_deref().unwrap_or("—"));
+            kv(
+                ui,
+                "Module API",
+                entry.card.game.api.as_deref().unwrap_or("—"),
+            );
             kv(
                 ui,
                 "Environment",
@@ -953,8 +957,8 @@ enum Draft {
     Group,
 }
 
-/// Direct requirements, counting libraries only while the Mods tab is showing them.
-pub(super) fn mod_count(entry: &InstanceEntry, show_libraries: bool) -> usize {
+/// Direct requirements, counting libraries only while the Modules tab is showing them.
+pub(super) fn module_count(entry: &InstanceEntry, show_libraries: bool) -> usize {
     entry
         .card
         .packages
@@ -1211,7 +1215,7 @@ fn join_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
 pub(super) fn op_result_word(kind: OpKind) -> &'static str {
     match kind {
         OpKind::Create => "Creation",
-        OpKind::Mods => "Mod change",
+        OpKind::Modules => "Module change",
         OpKind::Update => "Update",
         OpKind::Build => "Build",
         OpKind::Play => "Launch",

@@ -82,7 +82,7 @@ fn compile(prepared: &Prepared) -> Result<(), String> {
         .set("LegalCopyright", "AGPL-3.0-or-later")
         .set(
             "Comments",
-            "Instances, mods, one-click updates and builds for Project Watt Cubed",
+            "Instances, modules, one-click updates and builds for Project Watt Cubed",
         );
     res.compile().map_err(|err| format!("winresource: {err}"))
 }

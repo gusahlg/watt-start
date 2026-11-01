@@ -63,8 +63,9 @@ pub(super) fn run(
     if let Binding::Managed { pin: Some(pin), .. } = &target_source {
         reporter.phase(Phase::Checkout, true);
         let game = crate::snapshots::game_snapshot(paths, &pin.game, &pin.engine);
-        let mods_dir = crate::snapshots::mods_snapshot(paths, &pin.mods);
-        if !crate::snapshots::is_complete(&game.dir) || !crate::snapshots::is_complete(&mods_dir) {
+        let modules_dir = crate::snapshots::modules_snapshot(paths, &pin.modules);
+        if !crate::snapshots::is_complete(&game.dir) || !crate::snapshots::is_complete(&modules_dir)
+        {
             let mut on_progress = |_repo: Repo, p: crate::git::GitProgress| {
                 reporter.progress(u64::from(p.percent), Some(100), p.stage);
             };
@@ -77,14 +78,14 @@ pub(super) fn run(
                 &mut on_line,
             )
             .context("cannot restore the game snapshot")?;
-            crate::snapshots::ensure_mods(paths, &pin.mods, &mut on_progress, &mut on_line)
-                .context("cannot restore the mods snapshot")?;
+            crate::snapshots::ensure_modules(paths, &pin.modules, &mut on_progress, &mut on_line)
+                .context("cannot restore the modules snapshot")?;
         }
     }
 
     reporter.phase(Phase::Lock, false);
     // `instance.toml` first, then the lock: killed in between, the lock is merely stale and the
-    // next op relocks it from the restored wanted mods.
+    // next op relocks it from the restored wanted modules.
     let manifest_path = InstancePaths::new(&instance.dir).generation_manifest(target_id);
     let instance = match std::fs::read_to_string(&manifest_path) {
         Ok(text) => {

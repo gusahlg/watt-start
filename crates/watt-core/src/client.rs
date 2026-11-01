@@ -1,7 +1,7 @@
 //! Running an op as a child process and reading its events: what the GUI uses.
 //!
 //! [`OpHandle::spawn`] starts `<exe> op --events json --request-stdin` and writes the request
-//! JSON to the child's stdin (so a long mod list is not a command-line argument). `op --request
+//! JSON to the child's stdin (so a long module list is not a command-line argument). `op --request
 //! <json>` remains the hand-run form ([`OpRequest::to_args`]). Stdout is piped (events) and
 //! stderr is piped (anything the worker printed before its own capture started, or after it
 //! broke: forwarded as log lines). A reader thread parses envelopes into a channel;
@@ -375,7 +375,7 @@ fn lowered_priority(request: &OpRequest, build_nice: Option<i32>) -> Option<i32>
     match request {
         OpRequest::Build { .. }
         | OpRequest::Update { .. }
-        | OpRequest::Mods { .. }
+        | OpRequest::Modules { .. }
         | OpRequest::Create { .. }
         | OpRequest::Rollback { .. }
         | OpRequest::SetSource { .. } => Some(nice),

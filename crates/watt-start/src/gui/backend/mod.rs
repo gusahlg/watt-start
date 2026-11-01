@@ -188,14 +188,17 @@ pub trait Backend {
     /// Apply a presentation edit now (blocking: this is a small, local file write).
     fn edit_meta(&mut self, instance: &str, edit: MetaEdit) -> Result<Meta, String>;
 
-    /// The mods an instance could add (background-loaded).
+    /// The modules an instance could add (background-loaded).
     ///
-    /// The `Arc` is cheap to clone. The mods tab should keep it rather than cloning the vecs.
-    fn available_mods(&mut self, instance: &str) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>;
+    /// The `Arc` is cheap to clone. The modules tab should keep it rather than cloning the vecs.
+    fn available_modules(
+        &mut self,
+        instance: &str,
+    ) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>;
 
-    /// Drop the cached mod catalogue after a mods/source/update/create op or a settings change.
+    /// Drop the cached module catalogue after a modules/source/update/create op or a settings change.
     /// A live refresh must not call this. The default does nothing.
-    fn invalidate_mods(&mut self) {}
+    fn invalidate_modules(&mut self) {}
 
     /// Trailing lines of an on-disk op log. The real backend loads them off the UI thread and
     /// keeps the previous tail visible while a reload runs.

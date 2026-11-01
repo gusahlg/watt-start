@@ -78,8 +78,9 @@ pub(super) fn ensure_sources(
 ) -> Result<ResolvedSource> {
     if let Binding::Managed { pin: Some(pin), .. } = &meta.source {
         let game = crate::snapshots::game_snapshot(paths, &pin.game, &pin.engine);
-        let mods_dir = crate::snapshots::mods_snapshot(paths, &pin.mods);
-        if !crate::snapshots::is_complete(&game.dir) || !crate::snapshots::is_complete(&mods_dir) {
+        let modules_dir = crate::snapshots::modules_snapshot(paths, &pin.modules);
+        if !crate::snapshots::is_complete(&game.dir) || !crate::snapshots::is_complete(&modules_dir)
+        {
             reporter.phase(Phase::Checkout, true);
             let try_checkout = || -> Result<()> {
                 let mut on_progress = |_repo: Repo, p: crate::git::GitProgress| {
@@ -93,7 +94,12 @@ pub(super) fn ensure_sources(
                     &mut on_progress,
                     &mut on_line,
                 )?;
-                crate::snapshots::ensure_mods(paths, &pin.mods, &mut on_progress, &mut on_line)?;
+                crate::snapshots::ensure_modules(
+                    paths,
+                    &pin.modules,
+                    &mut on_progress,
+                    &mut on_line,
+                )?;
                 Ok(())
             };
             if let Err(e) = try_checkout() {

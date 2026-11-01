@@ -2,9 +2,9 @@
 Type=Application
 Name=watt-start
 GenericName=Project Watt Cubed launcher
-Comment=Play, update and mod Project Watt Cubed
+Comment=Play, update and extend Project Watt Cubed with modules
 Exec=watt-start
 Icon=watt-start
 Terminal=false
 Categories=Game;
-Keywords=pwc;voxel;launcher;mods;
+Keywords=pwc;voxel;launcher;modules;

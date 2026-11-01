@@ -1,4 +1,4 @@
-//! Mods tab: installed packages and the catalogue, with staged changes.
+//! Modules tab: installed packages and the catalogue, with staged changes.
 //!
 //! The instance page hands this the content rect under the tab strip. Page padding is the
 //! parent's; this tab does not add its own inset.
@@ -16,7 +16,7 @@ use pwc_manifest::{Version, VersionReq};
 use watt_core::catalog::{AvailableMod, PackageCard};
 use watt_core::ops::OpRequest;
 
-use super::{App, StagedMods};
+use super::{App, StagedModules};
 use crate::gui::backend::{InstanceEntry, Loaded};
 use crate::gui::theme::{self, Palette};
 use crate::gui::widgets::{self, Icon, Size, Variant};
@@ -37,18 +37,18 @@ const NAME_X: f32 = PAD_X + ICON_PX + 10.0;
 /// 8% of 255. Staged-row tint.
 const TINT: u8 = 20;
 
-/// Per-instance Mods tab UI. The segment is chosen once, the first time that instance is shown.
+/// Per-instance Modules tab UI. The segment is chosen once, the first time that instance is shown.
 ///
-/// Row models are cached here, not on [`InstanceModsUi`]: the view is cloned every frame, and
+/// Row models are cached here, not on [`InstanceModulesUi`]: the view is cloned every frame, and
 /// the models are the expensive part (closures, reverse dependencies, both lists).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ModsTabState {
-    views: HashMap<String, InstanceModsUi>,
+pub(crate) struct ModulesTabState {
+    views: HashMap<String, InstanceModulesUi>,
     cache: Option<ModelCache>,
 }
 
-impl ModsTabState {
-    /// Whether the Mods tab of `instance` currently lists libraries (the header's mod count
+impl ModulesTabState {
+    /// Whether the Modules tab of `instance` currently lists libraries (the header's module count
     /// follows it).
     pub(crate) fn shows_libraries(&self, instance: &str) -> bool {
         self.views.get(instance).is_some_and(|v| v.show_libraries)
@@ -56,7 +56,7 @@ impl ModsTabState {
 }
 
 #[derive(Clone, Debug)]
-struct InstanceModsUi {
+struct InstanceModulesUi {
     /// 0 = Installed, 1 = Browse.
     segment: usize,
     search: String,
@@ -83,7 +83,7 @@ struct InstanceModsUi {
     impact_open: bool,
 }
 
-impl InstanceModsUi {
+impl InstanceModulesUi {
     fn fresh(has_packages: bool) -> Self {
         Self {
             segment: usize::from(!has_packages),
@@ -111,11 +111,11 @@ enum Click {
     Remove(String),
     UndoAdd(String),
     UndoRemove(String),
-    /// `true` rebuilds after the mod list changes.
+    /// `true` rebuilds after the module list changes.
     Apply(bool),
     Discard,
     Retry,
-    /// Stage one direct mod for a newest-version relock.
+    /// Stage one direct module for a newest-version relock.
     Update(String),
     UpdateAll,
     /// Stage `id` or `id@=version`, replacing any staged spec for that id.
@@ -126,7 +126,7 @@ enum Click {
 
 enum Catalog {
     Pending,
-    /// The backend's shared catalogue (mods, warnings): borrowed, never copied per frame.
+    /// The backend's shared catalogue (modules, warnings): borrowed, never copied per frame.
     Ready(Arc<(Vec<AvailableMod>, Vec<String>)>),
     Failed(String),
 }
@@ -140,7 +140,7 @@ impl Catalog {
         }
     }
 
-    fn mods(&self) -> &[AvailableMod] {
+    fn modules(&self) -> &[AvailableMod] {
         match self {
             Self::Ready(data) => &data.0,
             Self::Pending | Self::Failed(_) => &[],
@@ -155,7 +155,7 @@ struct Filter {
 }
 
 impl Filter {
-    fn from_view(view: &InstanceModsUi) -> Self {
+    fn from_view(view: &InstanceModulesUi) -> Self {
         Self {
             query: view.search.trim().to_lowercase(),
             category: view.category.clone(),
@@ -300,7 +300,7 @@ struct BrowseModel {
 }
 
 enum EmptyKind {
-    NoMods,
+    NoModules,
     NoCatalogue,
     OnlyInstalledLibraries,
     OnlyCatalogueLibraries,
@@ -362,7 +362,7 @@ struct Chrome<'a> {
 }
 
 impl Chrome<'_> {
-    fn from_view(view: &InstanceModsUi) -> Chrome<'_> {
+    fn from_view(view: &InstanceModulesUi) -> Chrome<'_> {
         Chrome {
             selected: view.selected.as_deref().unwrap_or(""),
             key_ring: view.key_nav,
@@ -375,10 +375,10 @@ impl Chrome<'_> {
     }
 }
 
-/// A catalogue requirement the instance's Mod API does not satisfy.
+/// A catalogue requirement the instance's Module API does not satisfy.
 #[derive(Clone, Debug)]
 struct CompatNote {
-    /// "needs Mod API >=0.5".
+    /// "needs Module API >=0.5".
     pill: String,
     /// Why Add will probably fail.
     tip: String,
@@ -407,7 +407,7 @@ struct Impact {
     removes: Vec<DiffLine>,
     /// Installed packages nothing reachable needs, and that the user did not stage.
     orphans: Vec<DiffLine>,
-    /// Staged adds whose Mod API requirement excludes this instance.
+    /// Staged adds whose Module API requirement excludes this instance.
     incompatible: usize,
 }
 
@@ -438,14 +438,14 @@ enum UndoKind {
     Update,
 }
 
-/// Cached list models. One entry: the Mods tab shows one instance at a time.
+/// Cached list models. One entry: the Modules tab shows one instance at a time.
 #[derive(Clone, Debug)]
 struct ModelCache {
     instance: String,
     data_fp: u64,
-    staged: StagedMods,
+    staged: StagedModules,
     impact: Impact,
-    /// Package id → mods and bundles that require it.
+    /// Package id → modules and bundles that require it.
     rev: HashMap<String, Vec<RevRef>>,
     view_fp: u64,
     installed: Option<InstalledModel>,
@@ -455,7 +455,7 @@ struct ModelCache {
     /// Category name and how many packages in the visible segment have it.
     categories: Vec<(String, usize)>,
     nav: Vec<NavRow>,
-    /// Direct mods with a newer catalogue version that are not staged yet.
+    /// Direct modules with a newer catalogue version that are not staged yet.
     update_n: usize,
     /// Details-panel model for the selected id. Dropped with the rest when data or staging
     /// changes.
@@ -472,19 +472,19 @@ struct RevRef {
 }
 
 impl App {
-    pub(crate) fn mods_tab(&mut self, ui: &mut egui::Ui, entry: &InstanceEntry) {
+    pub(crate) fn modules_tab(&mut self, ui: &mut egui::Ui, entry: &InstanceEntry) {
         let name = entry.card.name.clone();
         let has_packages = !entry.card.packages.is_empty();
-        let catalog = Catalog::from_loaded(self.backend.available_mods(&name));
+        let catalog = Catalog::from_loaded(self.backend.available_modules(&name));
         // Moved out and back in, not cloned: the view holds the expansion sets.
         let mut view = self
-            .mods_ui
+            .modules_ui
             .views
             .remove(&name)
-            .unwrap_or_else(|| InstanceModsUi::fresh(has_packages));
-        let empty = StagedMods::default();
-        let staged = self.staged_mods.get(&name).unwrap_or(&empty);
-        let rebuild = self.settings_draft.rebuild_after_mod_change;
+            .unwrap_or_else(|| InstanceModulesUi::fresh(has_packages));
+        let empty = StagedModules::default();
+        let staged = self.staged_modules.get(&name).unwrap_or(&empty);
+        let rebuild = self.settings_draft.rebuild_after_module_change;
         let busy = self.busy(&name) || entry.status.busy;
         let wait = wait_reason(self, &name, entry.status.busy);
         let hint = rebuild_hint(rebuild, last_build_ms(entry));
@@ -494,13 +494,13 @@ impl App {
             .push_id(&name, |ui| {
                 let mut keys = Click::None;
                 let narrow = ui.available_width() < DETAILS_BREAK;
-                handle_mods_keys(
+                handle_modules_keys(
                     ui,
                     modal,
                     narrow,
                     &name,
                     &mut view,
-                    self.mods_ui.cache.as_ref(),
+                    self.modules_ui.cache.as_ref(),
                     &mut keys,
                 );
                 let painted = paint_tab(
@@ -516,32 +516,32 @@ impl App {
                         rebuild,
                         last_ms: last_build_ms(entry),
                     },
-                    &mut self.mods_ui.cache,
+                    &mut self.modules_ui.cache,
                 );
                 set_click(&mut keys, painted);
                 keys
             })
             .inner;
 
-        self.mods_ui.views.insert(name.clone(), view);
-        self.apply_mods_click(&name, click);
+        self.modules_ui.views.insert(name.clone(), view);
+        self.apply_modules_click(&name, click);
     }
 
     /// Snapshot helper: show Browse for `instance` without waiting for the first-open default.
     #[allow(dead_code)]
-    pub(crate) fn mods_show_browse_for_tests(&mut self, instance: &str) {
-        let has = self.instance_has_mods(instance);
+    pub(crate) fn modules_show_browse_for_tests(&mut self, instance: &str) {
+        let has = self.instance_has_modules(instance);
         let view = self
-            .mods_ui
+            .modules_ui
             .views
             .entry(instance.to_owned())
-            .or_insert_with(|| InstanceModsUi::fresh(has));
+            .or_insert_with(|| InstanceModulesUi::fresh(has));
         view.segment = 1;
     }
 
     /// Snapshot helper: an instance with no packages, if the demo has one.
     #[allow(dead_code)]
-    pub(crate) fn mods_empty_instance_for_tests(&self) -> Option<String> {
+    pub(crate) fn modules_empty_instance_for_tests(&self) -> Option<String> {
         self.backend
             .instances()
             .iter()
@@ -551,45 +551,45 @@ impl App {
 
     /// Snapshot helper: set the search box. Does not change the segment.
     #[allow(dead_code)]
-    pub(crate) fn mods_set_search_for_tests(&mut self, instance: &str, search: &str) {
-        let has = self.instance_has_mods(instance);
+    pub(crate) fn modules_set_search_for_tests(&mut self, instance: &str, search: &str) {
+        let has = self.instance_has_modules(instance);
         let view = self
-            .mods_ui
+            .modules_ui
             .views
             .entry(instance.to_owned())
-            .or_insert_with(|| InstanceModsUi::fresh(has));
+            .or_insert_with(|| InstanceModulesUi::fresh(has));
         view.search = search.to_owned();
     }
 
     /// Snapshot helper: select a package and, on a narrow window, push the details panel.
     #[allow(dead_code)]
-    pub(crate) fn mods_select_for_tests(&mut self, instance: &str, id: &str, push: bool) {
-        let has = self.instance_has_mods(instance);
+    pub(crate) fn modules_select_for_tests(&mut self, instance: &str, id: &str, push: bool) {
+        let has = self.instance_has_modules(instance);
         let view = self
-            .mods_ui
+            .modules_ui
             .views
             .entry(instance.to_owned())
-            .or_insert_with(|| InstanceModsUi::fresh(has));
+            .or_insert_with(|| InstanceModulesUi::fresh(has));
         view.selected = Some(id.to_owned());
         view.details_open = push;
     }
 
     /// Snapshot helper: open the dependency-diff popup.
     #[allow(dead_code)]
-    pub(crate) fn mods_open_impact_for_tests(&mut self, instance: &str) {
-        let has = self.instance_has_mods(instance);
+    pub(crate) fn modules_open_impact_for_tests(&mut self, instance: &str) {
+        let has = self.instance_has_modules(instance);
         let view = self
-            .mods_ui
+            .modules_ui
             .views
             .entry(instance.to_owned())
-            .or_insert_with(|| InstanceModsUi::fresh(has));
+            .or_insert_with(|| InstanceModulesUi::fresh(has));
         view.impact_open = true;
     }
 
     /// Keyboard test: the selected package, if any.
     #[allow(dead_code)]
-    pub(crate) fn mods_selected_for_tests(&self, instance: &str) -> Option<String> {
-        self.mods_ui
+    pub(crate) fn modules_selected_for_tests(&self, instance: &str) -> Option<String> {
+        self.modules_ui
             .views
             .get(instance)
             .and_then(|view| view.selected.clone())
@@ -597,8 +597,8 @@ impl App {
 
     /// Keyboard test: ids staged for removal.
     #[allow(dead_code)]
-    pub(crate) fn mods_staged_remove_for_tests(&self, instance: &str) -> Vec<String> {
-        self.staged_mods
+    pub(crate) fn modules_staged_remove_for_tests(&self, instance: &str) -> Vec<String> {
+        self.staged_modules
             .get(instance)
             .map(|staged| staged.remove.clone())
             .unwrap_or_default()
@@ -606,40 +606,40 @@ impl App {
 
     /// Keyboard test: ids staged for a newest-version relock.
     #[allow(dead_code)]
-    pub(crate) fn mods_staged_update_for_tests(&self, instance: &str) -> Vec<String> {
-        self.staged_mods
+    pub(crate) fn modules_staged_update_for_tests(&self, instance: &str) -> Vec<String> {
+        self.staged_modules
             .get(instance)
             .map(|staged| staged.update.clone())
             .unwrap_or_default()
     }
 
-    /// Snapshot helper: stage a newest-version relock for one direct mod.
+    /// Snapshot helper: stage a newest-version relock for one direct module.
     #[allow(dead_code)]
-    pub(crate) fn mods_stage_update_for_tests(&mut self, instance: &str, id: &str) {
+    pub(crate) fn modules_stage_update_for_tests(&mut self, instance: &str, id: &str) {
         self.with_staged(instance, |staged| stage_update(staged, id));
     }
 
-    /// Whether the Mods tab wants Enter this frame: a row is selected, so Enter acts on it
+    /// Whether the Modules tab wants Enter this frame: a row is selected, so Enter acts on it
     /// instead of starting Play. Read by the app's shortcut handler before the tab paints.
-    pub(crate) fn mods_claims_enter(&self) -> bool {
-        self.instance_tab == super::InstanceTab::Mods
+    pub(crate) fn modules_claims_enter(&self) -> bool {
+        self.instance_tab == super::InstanceTab::Modules
             && matches!(&self.main_view, Some(super::MainView::Instance(name))
-                if self.mods_ui.views.get(name).is_some_and(|view| view.selected.is_some()))
+                if self.modules_ui.views.get(name).is_some_and(|view| view.selected.is_some()))
     }
 
-    fn instance_has_mods(&self, instance: &str) -> bool {
+    fn instance_has_modules(&self, instance: &str) -> bool {
         self.backend
             .instances()
             .iter()
             .any(|entry| entry.card.name == instance && !entry.card.packages.is_empty())
     }
 
-    fn apply_mods_click(&mut self, instance: &str, click: Click) {
+    fn apply_modules_click(&mut self, instance: &str, click: Click) {
         match click {
             Click::None => {}
             Click::Retry => self.backend.refresh(),
             Click::Discard => {
-                self.staged_mods.remove(instance);
+                self.staged_modules.remove(instance);
             }
             Click::Apply(rebuild) => self.apply_staged(instance, rebuild),
             Click::Add(id) => self.with_staged(instance, |staged| stage_add(staged, &id)),
@@ -659,9 +659,9 @@ impl App {
                 let Some(entry) = entry else {
                     return;
                 };
-                let catalog = Catalog::from_loaded(self.backend.available_mods(instance));
+                let catalog = Catalog::from_loaded(self.backend.available_modules(instance));
                 self.with_staged(instance, |staged| {
-                    stage_update_all(staged, &entry.card.packages, catalog.mods());
+                    stage_update_all(staged, &entry.card.packages, catalog.modules());
                 });
             }
             Click::Pin(spec) => self.with_staged(instance, |staged| stage_pin(staged, &spec)),
@@ -672,7 +672,7 @@ impl App {
     }
 
     fn apply_staged(&mut self, instance: &str, rebuild: bool) {
-        let Some(staged) = self.staged_mods.get(instance).cloned() else {
+        let Some(staged) = self.staged_modules.get(instance).cloned() else {
             return;
         };
         if staged.is_empty() {
@@ -680,7 +680,7 @@ impl App {
         }
         let started = self.start_op(
             instance,
-            OpRequest::Mods {
+            OpRequest::Modules {
                 instance: instance.to_owned(),
                 add: staged.add,
                 remove: staged.remove,
@@ -689,15 +689,15 @@ impl App {
             },
         );
         if started {
-            self.staged_mods.remove(instance);
+            self.staged_modules.remove(instance);
         }
     }
 
-    fn with_staged(&mut self, instance: &str, change: impl FnOnce(&mut StagedMods)) {
-        let mut staged = self.staged_mods.remove(instance).unwrap_or_default();
+    fn with_staged(&mut self, instance: &str, change: impl FnOnce(&mut StagedModules)) {
+        let mut staged = self.staged_modules.remove(instance).unwrap_or_default();
         change(&mut staged);
         if !staged.is_empty() {
-            self.staged_mods.insert(instance.to_owned(), staged);
+            self.staged_modules.insert(instance.to_owned(), staged);
         }
     }
 }
@@ -745,16 +745,16 @@ struct BarOpts<'a> {
 
 fn paint_tab(
     ui: &mut Ui,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     entry: &InstanceEntry,
-    staged: &StagedMods,
+    staged: &StagedModules,
     catalog: &Catalog,
     bar: &BarOpts<'_>,
     cache: &mut Option<ModelCache>,
 ) -> Click {
     let full = ui.available_rect_before_wrap();
     let stacked = full.width() < BAR_STACK_BREAK;
-    let bar_id = Id::unique(("mods-pending-h", entry.card.name.as_str()));
+    let bar_id = Id::unique(("modules-pending-h", entry.card.name.as_str()));
     let target = if staged.is_empty() {
         0.0
     } else if stacked {
@@ -897,7 +897,7 @@ fn paint_tab(
 
 fn paint_toolbar(
     ui: &mut Ui,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     instance: &str,
     categories: &[(String, usize)],
     installed_n: usize,
@@ -910,7 +910,7 @@ fn paint_toolbar(
         let mut segment = view.segment;
         widgets::segmented(
             ui,
-            "mods-seg",
+            "modules-seg",
             &mut segment,
             &[("Installed", Some(installed_n)), ("Browse", browse_n)],
         );
@@ -920,9 +920,9 @@ fn paint_toolbar(
             let search_w = (ui.available_width() - 312.0 - update_w).max(80.0);
             let response = widgets::search_input_with_id(
                 ui,
-                ("mods-search", instance),
+                ("modules-search", instance),
                 &mut view.search,
-                "Search mods",
+                "Search modules",
                 search_w,
             );
             take_search_focus(view, &response);
@@ -933,9 +933,9 @@ fn paint_toolbar(
             let search_w = ui.available_width().max(40.0);
             let response = widgets::search_input_with_id(
                 ui,
-                ("mods-search", instance),
+                ("modules-search", instance),
                 &mut view.search,
-                "Search mods",
+                "Search modules",
                 search_w,
             );
             take_search_focus(view, &response);
@@ -951,9 +951,9 @@ fn paint_toolbar(
     click
 }
 
-fn take_search_focus(view: &mut InstanceModsUi, response: &egui::Response) {
-    // The hint is a placeholder, not the accessible name. The keyboard test looks up "Search mods".
-    let _ = response.clone().accessible_name("Search mods");
+fn take_search_focus(view: &mut InstanceModulesUi, response: &egui::Response) {
+    // The hint is a placeholder, not the accessible name. The keyboard test looks up "Search modules".
+    let _ = response.clone().accessible_name("Search modules");
     if view.focus_search {
         response.request_focus();
         view.focus_search = false;
@@ -969,7 +969,7 @@ fn update_all_button(ui: &mut Ui, n: usize) -> Click {
         .variant(Variant::Ghost)
         .size(Size::Small)
         .show(ui)
-        .on_hover_text("Move every outdated mod to its newest compatible version");
+        .on_hover_text("Move every outdated module to its newest compatible version");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     if response.clicked() {
         Click::UpdateAll
@@ -978,7 +978,7 @@ fn update_all_button(ui: &mut Ui, n: usize) -> Click {
     }
 }
 
-fn category_box(ui: &mut Ui, view: &mut InstanceModsUi, categories: &[(String, usize)]) {
+fn category_box(ui: &mut Ui, view: &mut InstanceModulesUi, categories: &[(String, usize)]) {
     let p = theme::palette(ui.ctx());
     let label = match &view.category {
         Some(cat) => categories
@@ -988,7 +988,7 @@ fn category_box(ui: &mut Ui, view: &mut InstanceModsUi, categories: &[(String, u
             .unwrap_or_else(|| cat.clone()),
         None => "All categories".to_owned(),
     };
-    egui::ComboBox::from_id_salt("mod-category")
+    egui::ComboBox::from_id_salt("module-category")
         .width(168.0)
         .truncate()
         .selected_text(
@@ -1043,8 +1043,8 @@ fn paint_segment(
     ui: &mut Ui,
     list_h: f32,
     instance: &str,
-    view: &mut InstanceModsUi,
-    staged: &StagedMods,
+    view: &mut InstanceModulesUi,
+    staged: &StagedModules,
     catalog: &Catalog,
     cache: &Option<ModelCache>,
     push: bool,
@@ -1063,8 +1063,8 @@ fn paint_installed(
     ui: &mut Ui,
     list_h: f32,
     instance: &str,
-    view: &mut InstanceModsUi,
-    staged: &StagedMods,
+    view: &mut InstanceModulesUi,
+    staged: &StagedModules,
     cache: &ModelCache,
     push: bool,
 ) -> Click {
@@ -1122,7 +1122,7 @@ fn paint_installed(
             section_label(
                 ui,
                 &mut started,
-                &format!("Mods ({})", model.direct.len()),
+                &format!("Modules ({})", model.direct.len()),
                 p.text_muted,
             );
             for row in &model.direct {
@@ -1176,7 +1176,7 @@ fn paint_installed(
 fn paint_direct(
     ui: &mut Ui,
     instance: &str,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     row: &DirectRow,
     p: &Palette,
     push: bool,
@@ -1222,7 +1222,7 @@ fn paint_browse(
     ui: &mut Ui,
     list_h: f32,
     instance: &str,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     catalog: &Catalog,
     cache: &ModelCache,
     push: bool,
@@ -1282,19 +1282,19 @@ fn paint_browse(
 
 fn paint_browse_sections(
     ui: &mut Ui,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     model: &BrowseModel,
     p: &Palette,
     push: bool,
     click: &mut Click,
 ) {
     let mut bundles = Vec::new();
-    let mut mods = Vec::new();
+    let mut modules = Vec::new();
     for row in &model.rows {
         if row.kind == "bundle" {
             bundles.push(row);
         } else {
-            mods.push(row);
+            modules.push(row);
         }
     }
     let mut started = false;
@@ -1309,14 +1309,14 @@ fn paint_browse_sections(
             paint_one_browse(ui, view, row, p, push, click);
         }
     }
-    if !mods.is_empty() {
+    if !modules.is_empty() {
         section_label(
             ui,
             &mut started,
-            &format!("Mods ({})", mods.len()),
+            &format!("Modules ({})", modules.len()),
             p.text_muted,
         );
-        for row in mods {
+        for row in modules {
             paint_one_browse(ui, view, row, p, push, click);
         }
     }
@@ -1324,7 +1324,7 @@ fn paint_browse_sections(
 
 fn paint_one_browse(
     ui: &mut Ui,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     row: &BrowseRow,
     p: &Palette,
     push: bool,
@@ -1347,7 +1347,7 @@ fn installed_empty(model: &InstalledModel, filter: &Filter) -> Option<EmptyKind>
     } else if model.hidden_libraries > 0 {
         Some(EmptyKind::OnlyInstalledLibraries)
     } else {
-        Some(EmptyKind::NoMods)
+        Some(EmptyKind::NoModules)
     }
 }
 
@@ -1356,7 +1356,7 @@ fn empty_in_rect(
     list_h: f32,
     kind: EmptyKind,
     search: &str,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
 ) -> Click {
     let rect = list_rect(ui, list_h);
     let _ = ui.allocate_rect(rect, Sense::hover());
@@ -1447,14 +1447,14 @@ fn deps_header(ui: &mut Ui, open: bool, count: usize, p: &Palette) -> bool {
 fn build_installed(
     entry: &InstanceEntry,
     catalog: &Catalog,
-    view: &InstanceModsUi,
-    staged: &StagedMods,
+    view: &InstanceModulesUi,
+    staged: &StagedModules,
     impact: &Impact,
 ) -> InstalledModel {
     let filter = Filter::from_view(view);
     let packages = &entry.card.packages;
     let unresolved_ids = unresolved_ids(entry);
-    let avail = index_available(catalog.mods());
+    let avail = index_available(catalog.modules());
     let by_pkg = index_packages(packages);
     let facts = Facts {
         impact,
@@ -1542,9 +1542,9 @@ fn bundle_parents(packages: &[PackageCard]) -> HashMap<String, String> {
 fn plan_direct(
     pkg: PackageCard,
     kids: &[PackageCard],
-    view: &InstanceModsUi,
+    view: &InstanceModulesUi,
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
     facts: &Facts<'_>,
 ) -> Option<DirectRow> {
     let removing = is_removing(staged, &pkg.id);
@@ -1617,7 +1617,7 @@ fn shown_members(
     open: bool,
     user_open: bool,
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
     facts: &Facts<'_>,
 ) -> Vec<MemberRow> {
     if !open {
@@ -1651,9 +1651,9 @@ fn shown_members(
 
 fn plan_deps(
     deps: &[PackageCard],
-    view: &InstanceModsUi,
+    view: &InstanceModulesUi,
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
     facts: &Facts<'_>,
 ) -> DepGroup {
     let mut listed = Vec::new();
@@ -1702,7 +1702,7 @@ fn adding_rows(
     packages: &[PackageCard],
     unresolved: &[String],
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
     facts: &Facts<'_>,
 ) -> Vec<AddRow> {
     let mut rows = Vec::new();
@@ -1717,7 +1717,7 @@ fn adding_rows(
         let desc = found
             .map(|m| m.description.as_str())
             .unwrap_or("Not in the catalogue");
-        let kind = found.map(|m| m.kind.as_str()).unwrap_or("mod");
+        let kind = found.map(|m| m.kind.as_str()).unwrap_or("module");
         let cats: &[String] = found.map(|m| m.categories.as_slice()).unwrap_or(&[]);
         if !filter.search(name, id, desc) || !filter.category_ok(cats) {
             continue;
@@ -1739,7 +1739,7 @@ fn adding_rows(
 fn unresolved_rows(
     ids: &[String],
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
     facts: &Facts<'_>,
 ) -> Vec<PlainRow> {
     let desc = "Requested, but not in the lock.";
@@ -1772,7 +1772,7 @@ fn orphan_rows(
     packages: &[PackageCard],
     unresolved: &[String],
     filter: &Filter,
-    staged: &StagedMods,
+    staged: &StagedModules,
 ) -> Vec<PlainRow> {
     let mut rows = Vec::new();
     for id in &staged.remove {
@@ -1804,7 +1804,7 @@ fn unresolved_ids(entry: &InstanceEntry) -> Vec<String> {
     entry
         .card
         .manifest
-        .mods
+        .modules
         .keys()
         .filter(|id| !have.contains(id.as_str()))
         .map(|id| id.as_str().to_owned())
@@ -1814,8 +1814,8 @@ fn unresolved_ids(entry: &InstanceEntry) -> Vec<String> {
 fn build_browse(
     entry: &InstanceEntry,
     catalog: &Catalog,
-    view: &InstanceModsUi,
-    staged: &StagedMods,
+    view: &InstanceModulesUi,
+    staged: &StagedModules,
     game_api: Option<&str>,
 ) -> BrowseModel {
     let Catalog::Ready(data) = catalog else {
@@ -1825,16 +1825,16 @@ fn build_browse(
             non_library: 0,
         };
     };
-    let mods = &data.0;
+    let modules = &data.0;
     let filter = Filter::from_view(view);
-    let names: HashMap<&str, &str> = mods
+    let names: HashMap<&str, &str> = modules
         .iter()
         .map(|item| (item.id.as_str(), item.name.as_str()))
         .collect();
     let mut hidden_libraries = 0;
     let mut non_library = 0;
     let mut rows = Vec::new();
-    for available in mods {
+    for available in modules {
         if available.kind == "library" && !filter.show_libraries {
             hidden_libraries += 1;
             continue;
@@ -1930,7 +1930,7 @@ fn required_by(pkg: &PackageCard, packages: &[PackageCard]) -> String {
         .iter()
         .find(|parent| parent.dependencies.iter().any(|dep| dep == &pkg.id))
         .map(|parent| parent.name.clone())
-        .unwrap_or_else(|| "another mod".to_owned())
+        .unwrap_or_else(|| "another module".to_owned())
 }
 
 /// Rows outside the scroll viewport only reserve their height: no trail, no galleys, no
@@ -2852,7 +2852,7 @@ fn note_label(ui: &mut Ui, text: &str) -> egui::Response {
 fn paint_pending(
     ui: &mut Ui,
     rect: Rect,
-    staged: &StagedMods,
+    staged: &StagedModules,
     entry: &InstanceEntry,
     impact: Option<&Impact>,
     open: &mut bool,
@@ -2876,11 +2876,12 @@ fn paint_pending(
     let hint_owned;
     let hint = if incompatible > 0 {
         let verb = if incompatible == 1 {
-            "mod needs"
+            "module needs"
         } else {
-            "mods need"
+            "modules need"
         };
-        hint_owned = format!("{incompatible} {verb} a newer Mod API · Apply may fail to resolve");
+        hint_owned =
+            format!("{incompatible} {verb} a newer Module API · Apply may fail to resolve");
         hint_owned.as_str()
     } else {
         bar.hint
@@ -3114,15 +3115,15 @@ fn paint_empty(ui: &mut Ui, rect: Rect, kind: EmptyKind, search: &str) -> EmptyA
 
 fn empty_copy(kind: EmptyKind, search: &str) -> EmptyCopy {
     match kind {
-        EmptyKind::NoMods => EmptyCopy {
-            title: "No mods in this instance".to_owned(),
+        EmptyKind::NoModules => EmptyCopy {
+            title: "No modules in this instance".to_owned(),
             body: "Browse the catalogue to add some.",
             cube: true,
-            button: Some(("Browse mods", Variant::Secondary, EmptyAction::Browse)),
+            button: Some(("Browse modules", Variant::Secondary, EmptyAction::Browse)),
         },
         EmptyKind::NoCatalogue => EmptyCopy {
-            title: "No mods in the catalogue".to_owned(),
-            body: "This instance's sources did not offer any mods.",
+            title: "No modules in the catalogue".to_owned(),
+            body: "This instance's sources did not offer any modules.",
             cube: true,
             button: None,
         },
@@ -3180,7 +3181,7 @@ fn centered_line(ui: &mut Ui, text: &str, font: FontId, color: Color32) {
         .galley(pos2(rect.left(), rect.top()), galley, color);
 }
 
-fn apply_empty(view: &mut InstanceModsUi, action: EmptyAction) -> Click {
+fn apply_empty(view: &mut InstanceModulesUi, action: EmptyAction) -> Click {
     match action {
         EmptyAction::None => Click::None,
         EmptyAction::Browse => {
@@ -3238,7 +3239,7 @@ fn with_reveal(ui: &mut Ui, id: Id, open: bool, body: impl FnOnce(&mut Ui)) {
 }
 
 fn reveal_id(instance: &str, key: &str) -> Id {
-    Id::unique(("mods-reveal", instance, key))
+    Id::unique(("modules-reveal", instance, key))
 }
 
 fn will_add_pill(p: &Palette, text: &str, compat: Option<&CompatNote>) -> Vec<Trail> {
@@ -3329,11 +3330,11 @@ fn show_kind(kind: &str, filter: &Filter, removing: bool) -> bool {
     filter.show_libraries || removing || kind != "library"
 }
 
-fn member_visible(pkg: &PackageCard, filter: &Filter, staged: &StagedMods) -> bool {
+fn member_visible(pkg: &PackageCard, filter: &Filter, staged: &StagedModules) -> bool {
     show_kind(&pkg.kind, filter, is_removing(staged, &pkg.id))
 }
 
-fn hidden_library_count(packages: &[PackageCard], staged: &StagedMods, show: bool) -> usize {
+fn hidden_library_count(packages: &[PackageCard], staged: &StagedModules, show: bool) -> usize {
     if show {
         return 0;
     }
@@ -3361,15 +3362,15 @@ fn spec_id(spec: &str) -> &str {
     spec.split_once('@').map(|(id, _)| id).unwrap_or(spec)
 }
 
-fn is_removing(staged: &StagedMods, id: &str) -> bool {
+fn is_removing(staged: &StagedModules, id: &str) -> bool {
     staged.remove.iter().any(|item| item == id)
 }
 
-fn is_adding(staged: &StagedMods, id: &str) -> bool {
+fn is_adding(staged: &StagedModules, id: &str) -> bool {
     staged.add.iter().any(|spec| spec_id(spec) == id)
 }
 
-fn stage_add(staged: &mut StagedMods, id: &str) {
+fn stage_add(staged: &mut StagedModules, id: &str) {
     undo_update(staged, id);
     let before = staged.remove.len();
     staged.remove.retain(|item| item != id);
@@ -3381,7 +3382,7 @@ fn stage_add(staged: &mut StagedMods, id: &str) {
     }
 }
 
-fn stage_remove(staged: &mut StagedMods, id: &str) {
+fn stage_remove(staged: &mut StagedModules, id: &str) {
     undo_update(staged, id);
     if undo_add(staged, id) {
         return;
@@ -3391,7 +3392,7 @@ fn stage_remove(staged: &mut StagedMods, id: &str) {
     }
 }
 
-fn stage_update(staged: &mut StagedMods, id: &str) {
+fn stage_update(staged: &mut StagedModules, id: &str) {
     undo_add(staged, id);
     staged.remove.retain(|item| item != id);
     if !staged.update.iter().any(|item| item == id) {
@@ -3399,7 +3400,11 @@ fn stage_update(staged: &mut StagedMods, id: &str) {
     }
 }
 
-fn stage_update_all(staged: &mut StagedMods, packages: &[PackageCard], catalog: &[AvailableMod]) {
+fn stage_update_all(
+    staged: &mut StagedModules,
+    packages: &[PackageCard],
+    catalog: &[AvailableMod],
+) {
     let avail = index_available(catalog);
     for pkg in packages {
         let Some(found) = avail.get(pkg.id.as_str()).copied() else {
@@ -3411,7 +3416,7 @@ fn stage_update_all(staged: &mut StagedMods, packages: &[PackageCard], catalog: 
     }
 }
 
-fn stage_pin(staged: &mut StagedMods, spec: &str) {
+fn stage_pin(staged: &mut StagedModules, spec: &str) {
     let id = spec_id(spec);
     undo_add(staged, id);
     staged.remove.retain(|item| item != id);
@@ -3419,17 +3424,17 @@ fn stage_pin(staged: &mut StagedMods, spec: &str) {
     staged.add.push(spec.to_owned());
 }
 
-fn undo_update(staged: &mut StagedMods, id: &str) {
+fn undo_update(staged: &mut StagedModules, id: &str) {
     staged.update.retain(|item| item != id);
 }
 
-fn undo_add(staged: &mut StagedMods, id: &str) -> bool {
+fn undo_add(staged: &mut StagedModules, id: &str) -> bool {
     let before = staged.add.len();
     staged.add.retain(|spec| spec_id(spec) != id);
     staged.add.len() != before
 }
 
-fn undo_remove(staged: &mut StagedMods, id: &str) {
+fn undo_remove(staged: &mut StagedModules, id: &str) {
     staged.remove.retain(|item| item != id);
 }
 
@@ -3465,8 +3470,11 @@ struct Facts<'a> {
     by_pkg: &'a HashMap<&'a str, &'a PackageCard>,
 }
 
-fn index_available(mods: &[AvailableMod]) -> HashMap<&str, &AvailableMod> {
-    mods.iter().map(|item| (item.id.as_str(), item)).collect()
+fn index_available(modules: &[AvailableMod]) -> HashMap<&str, &AvailableMod> {
+    modules
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect()
 }
 
 fn index_packages(packages: &[PackageCard]) -> HashMap<&str, &PackageCard> {
@@ -3483,8 +3491,10 @@ fn compat_note(available: &AvailableMod, game_api: Option<&str>) -> Option<Compa
         return None;
     }
     Some(CompatNote {
-        pill: format!("needs Mod API {req}"),
-        tip: format!("This instance has Mod API {have}. Adding it will probably fail to resolve."),
+        pill: format!("needs Module API {req}"),
+        tip: format!(
+            "This instance has Module API {have}. Adding it will probably fail to resolve."
+        ),
         req: req.to_owned(),
         have: have.to_owned(),
     })
@@ -3506,7 +3516,7 @@ fn newer_version(pkg: &PackageCard, available: Option<&AvailableMod>) -> Option<
 }
 
 /// Staged spec for an installed id: `*` follows newest, otherwise the pinned version.
-fn pin_label(staged: &StagedMods, id: &str) -> Option<String> {
+fn pin_label(staged: &StagedModules, id: &str) -> Option<String> {
     let spec = staged.add.iter().find(|spec| spec_id(spec) == id)?;
     let Some((_, rest)) = spec.split_once('@') else {
         return Some("*".to_owned());
@@ -3668,7 +3678,7 @@ fn predict(
     packages: &[PackageCard],
     catalog: &[AvailableMod],
     game_api: Option<&str>,
-    staged: &StagedMods,
+    staged: &StagedModules,
 ) -> Impact {
     let avail = index_available(catalog);
     let by_pkg = index_packages(packages);
@@ -3846,7 +3856,7 @@ fn reverse_refs(
 
 #[derive(Clone, Copy, Default)]
 struct BarCounts {
-    mods: usize,
+    modules: usize,
     deps: usize,
     leaving: usize,
     unused: usize,
@@ -3855,11 +3865,15 @@ struct BarCounts {
 
 impl BarCounts {
     fn is_blank(self) -> bool {
-        self.mods + self.deps + self.leaving + self.unused + self.updates == 0
+        self.modules + self.deps + self.leaving + self.unused + self.updates == 0
     }
 }
 
-fn bar_counts(staged: &StagedMods, packages: &[PackageCard], impact: Option<&Impact>) -> BarCounts {
+fn bar_counts(
+    staged: &StagedModules,
+    packages: &[PackageCard],
+    impact: Option<&Impact>,
+) -> BarCounts {
     let installed: HashSet<&str> = packages.iter().map(|pkg| pkg.id.as_str()).collect();
     let updates = staged.update.len().saturating_add(
         staged
@@ -3880,17 +3894,17 @@ fn bar_counts(staged: &StagedMods, packages: &[PackageCard], impact: Option<&Imp
         .map(|spec| spec_id(spec))
         .filter(|id| !installed.contains(id))
         .collect();
-    let mut mods = 0;
+    let mut modules = 0;
     let mut deps = 0;
     for line in &impact.adds {
         if roots.contains(line.id.as_str()) {
-            mods += 1;
+            modules += 1;
         } else {
             deps += 1;
         }
     }
     BarCounts {
-        mods,
+        modules,
         deps,
         leaving: impact.removes.len(),
         unused: impact.orphans.len(),
@@ -3912,7 +3926,7 @@ fn summary_response(
 ) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.scope_id().with("mods-impact-summary"),
+        ui.scope_id().with("modules-impact-summary"),
         Sense::click(),
     );
     let width = rect.width().max(1.0);
@@ -3967,7 +3981,7 @@ fn summary_galley(
                 "+",
                 p.ok,
                 p.text,
-                Phrase::new(counts.mods, "mod", "mods"),
+                Phrase::new(counts.modules, "module", "modules"),
                 Phrase::new(counts.deps, "dependency", "dependencies"),
             ),
             p.text,
@@ -3979,7 +3993,7 @@ fn summary_galley(
                 "−",
                 p.bad,
                 p.text,
-                Phrase::new(counts.leaving, "mod", "mods"),
+                Phrase::new(counts.leaving, "module", "modules"),
                 Phrase::new(counts.unused, "unused", "unused"),
             ),
             p.text,
@@ -4094,14 +4108,14 @@ fn append_group(
 
 fn apply_tip(rebuild: bool, last_ms: Option<u64>) -> String {
     if !rebuild {
-        return "Change the mod list now; build later with Play".to_owned();
+        return "Change the module list now; build later with Play".to_owned();
     }
     match last_ms {
         Some(ms) => format!(
-            "Change the mod list and rebuild now · last build {} min",
+            "Change the module list and rebuild now · last build {} min",
             ms / 60_000
         ),
-        None => "Change the mod list and rebuild now".to_owned(),
+        None => "Change the module list and rebuild now".to_owned(),
     }
 }
 
@@ -4118,7 +4132,7 @@ fn paint_diff_popup(ui: &mut Ui, impact: Option<&Impact>) {
     let rows = impact.map(popup_rows).unwrap_or_default();
     if !rows.is_empty() {
         egui::ScrollArea::vertical()
-            .id_salt("mods-diff-lines")
+            .id_salt("modules-diff-lines")
             .max_height(320.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -4266,8 +4280,8 @@ fn ensure_cache(
     cache: &mut Option<ModelCache>,
     entry: &InstanceEntry,
     catalog: &Catalog,
-    view: &InstanceModsUi,
-    staged: &StagedMods,
+    view: &InstanceModulesUi,
+    staged: &StagedModules,
 ) {
     let data_fp = data_fingerprint(entry, catalog);
     let data_ok = cache.as_ref().is_some_and(|item| {
@@ -4276,11 +4290,11 @@ fn ensure_cache(
     if !data_ok {
         let impact = predict(
             &entry.card.packages,
-            catalog.mods(),
+            catalog.modules(),
             entry.card.game.api.as_deref(),
             staged,
         );
-        let rev = reverse_refs(&entry.card.packages, catalog.mods());
+        let rev = reverse_refs(&entry.card.packages, catalog.modules());
         *cache = Some(ModelCache {
             instance: entry.card.name.clone(),
             data_fp,
@@ -4320,8 +4334,8 @@ fn rebuild_view(
     item: &mut ModelCache,
     entry: &InstanceEntry,
     catalog: &Catalog,
-    view: &InstanceModsUi,
-    staged: &StagedMods,
+    view: &InstanceModulesUi,
+    staged: &StagedModules,
     view_fp: u64,
 ) {
     let impact = &item.impact;
@@ -4336,7 +4350,7 @@ fn rebuild_view(
         item.browse = Some(model);
         item.installed = None;
         item.installed_n = build_installed(entry, catalog, view, staged, impact).top_count();
-        item.categories = category_counts_browse(catalog.mods(), view.show_libraries);
+        item.categories = category_counts_browse(catalog.modules(), view.show_libraries);
     } else {
         let model = build_installed(entry, catalog, view, staged, impact);
         item.nav = nav_installed(&model);
@@ -4346,11 +4360,15 @@ fn rebuild_view(
         item.browse_n = cheap_browse_len(catalog, view);
         item.categories = category_counts_installed(entry, catalog, staged, view.show_libraries);
     }
-    item.update_n = count_updates(&entry.card.packages, catalog.mods(), staged);
+    item.update_n = count_updates(&entry.card.packages, catalog.modules(), staged);
     item.view_fp = view_fp;
 }
 
-fn count_updates(packages: &[PackageCard], catalog: &[AvailableMod], staged: &StagedMods) -> usize {
+fn count_updates(
+    packages: &[PackageCard],
+    catalog: &[AvailableMod],
+    staged: &StagedModules,
+) -> usize {
     let avail = index_available(catalog);
     packages
         .iter()
@@ -4361,14 +4379,15 @@ fn count_updates(packages: &[PackageCard], catalog: &[AvailableMod], staged: &St
         .count()
 }
 
-fn cheap_browse_len(catalog: &Catalog, view: &InstanceModsUi) -> Option<usize> {
+fn cheap_browse_len(catalog: &Catalog, view: &InstanceModulesUi) -> Option<usize> {
     let Catalog::Ready(data) = catalog else {
         return None;
     };
-    let mods = &data.0;
+    let modules = &data.0;
     let filter = Filter::from_view(view);
     Some(
-        mods.iter()
+        modules
+            .iter()
             .filter(|item| {
                 if item.kind == "library" && !filter.show_libraries {
                     return false;
@@ -4382,10 +4401,10 @@ fn cheap_browse_len(catalog: &Catalog, view: &InstanceModsUi) -> Option<usize> {
 fn category_counts_installed(
     entry: &InstanceEntry,
     catalog: &Catalog,
-    staged: &StagedMods,
+    staged: &StagedModules,
     show_libraries: bool,
 ) -> Vec<(String, usize)> {
-    let avail = index_available(catalog.mods());
+    let avail = index_available(catalog.modules());
     let mut map: BTreeMap<String, HashSet<String>> = BTreeMap::new();
     {
         let mut note = |id: &str, cats: &[String]| {
@@ -4426,9 +4445,9 @@ fn category_counts_installed(
     map.into_iter().map(|(cat, ids)| (cat, ids.len())).collect()
 }
 
-fn category_counts_browse(mods: &[AvailableMod], show_libraries: bool) -> Vec<(String, usize)> {
+fn category_counts_browse(modules: &[AvailableMod], show_libraries: bool) -> Vec<(String, usize)> {
     let mut map: BTreeMap<String, HashSet<String>> = BTreeMap::new();
-    for item in mods {
+    for item in modules {
         if item.kind == "library" && !show_libraries {
             continue;
         }
@@ -4563,7 +4582,7 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
         pkg.authors.hash(&mut hasher);
         pkg.license.hash(&mut hasher);
     }
-    for id in entry.card.manifest.mods.keys() {
+    for id in entry.card.manifest.modules.keys() {
         id.as_str().hash(&mut hasher);
     }
     match catalog {
@@ -4573,11 +4592,11 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
             message.hash(&mut hasher);
         }
         Catalog::Ready(data) => {
-            let (mods, warnings) = (&data.0, &data.1);
+            let (modules, warnings) = (&data.0, &data.1);
             2u8.hash(&mut hasher);
             warnings.hash(&mut hasher);
-            mods.len().hash(&mut hasher);
-            for item in mods {
+            modules.len().hash(&mut hasher);
+            for item in modules {
                 item.id.hash(&mut hasher);
                 item.version.hash(&mut hasher);
                 item.versions.hash(&mut hasher);
@@ -4596,7 +4615,7 @@ fn data_fingerprint(entry: &InstanceEntry, catalog: &Catalog) -> u64 {
     hasher.finish()
 }
 
-fn view_fingerprint(view: &InstanceModsUi) -> u64 {
+fn view_fingerprint(view: &InstanceModulesUi) -> u64 {
     let mut hasher = DefaultHasher::new();
     view.segment.hash(&mut hasher);
     view.search.hash(&mut hasher);
@@ -4615,12 +4634,12 @@ fn hash_ids(ids: &HashSet<String>, hasher: &mut DefaultHasher) {
     sorted.hash(hasher);
 }
 
-fn handle_mods_keys(
+fn handle_modules_keys(
     ui: &mut Ui,
     modal: bool,
     narrow: bool,
     instance: &str,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     cache: Option<&ModelCache>,
     keys: &mut Click,
 ) {
@@ -4678,7 +4697,7 @@ fn handle_mods_keys(
     }
 }
 
-fn move_selection(view: &mut InstanceModsUi, nav: &[NavRow], down: bool) {
+fn move_selection(view: &mut InstanceModulesUi, nav: &[NavRow], down: bool) {
     if nav.is_empty() {
         return;
     }
@@ -4713,7 +4732,7 @@ fn delete_click(nav: &[NavRow], selected: Option<&str>) -> Click {
 }
 
 fn note_hit(
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     id: &str,
     hit: RowHit,
     undo: UndoKind,
@@ -4726,7 +4745,7 @@ fn note_hit(
     set_click(click, hit_click(hit, id, undo));
 }
 
-fn select_row(view: &mut InstanceModsUi, id: &str, push: bool) {
+fn select_row(view: &mut InstanceModulesUi, id: &str, push: bool) {
     view.key_nav = false;
     if view.selected.as_deref() == Some(id) {
         view.selected = None;
@@ -4750,7 +4769,7 @@ struct Detail {
     license: String,
     categories: Vec<String>,
     source: String,
-    mod_api: String,
+    module_api: String,
     installed: bool,
     direct: bool,
     unresolved: bool,
@@ -4783,7 +4802,7 @@ fn lookup_ref(
             id: id.to_owned(),
             name: id.to_owned(),
             version: String::new(),
-            kind: "mod".to_owned(),
+            kind: "module".to_owned(),
         }
     }
 }
@@ -4806,7 +4825,7 @@ fn joined_or_dash(items: &[String]) -> String {
     }
 }
 
-fn mod_api_line(req: Option<&str>, have: Option<&str>) -> String {
+fn module_api_line(req: Option<&str>, have: Option<&str>) -> String {
     match (req, have) {
         (Some(req), Some(have)) => format!("{req} · instance has {have}"),
         (Some(req), None) => req.to_owned(),
@@ -4819,10 +4838,10 @@ fn resolve_detail(
     id: &str,
     entry: &InstanceEntry,
     catalog: &Catalog,
-    staged: &StagedMods,
+    staged: &StagedModules,
     cache: &Option<ModelCache>,
 ) -> Detail {
-    let avail = index_available(catalog.mods());
+    let avail = index_available(catalog.modules());
     let by_pkg = index_packages(&entry.card.packages);
     let pkg = by_pkg.get(id).copied();
     let item = avail.get(id).copied();
@@ -4890,7 +4909,7 @@ fn resolve_detail(
     let kind = pkg
         .map(|pkg| pkg.kind.clone())
         .or_else(|| item.map(|item| item.kind.clone()))
-        .unwrap_or_else(|| "mod".to_owned());
+        .unwrap_or_else(|| "module".to_owned());
     let description = pkg
         .map(|pkg| pkg.description.clone())
         .or_else(|| item.map(|item| item.description.clone()))
@@ -4918,16 +4937,16 @@ fn resolve_detail(
             item.map(|item| item.version.clone())
                 .unwrap_or_else(|| "newest".to_owned())
         });
-    let mod_api = if let Some(note) = &compat {
+    let module_api = if let Some(note) = &compat {
         format!("needs {} · instance has {}", note.req, note.have)
     } else {
-        mod_api_line(
+        module_api_line(
             item.and_then(|item| item.pwc_api.as_deref()),
             entry.card.game.api.as_deref(),
         )
     };
     Detail {
-        mod_api,
+        module_api,
         catalogue_version: item.map(|item| item.version.clone()).unwrap_or_default(),
         installed_version: pkg.map(|pkg| pkg.version.clone()),
         newer: pkg.and_then(|pkg| newer_version(pkg, item)),
@@ -4962,10 +4981,10 @@ fn paint_details(
     ui: &mut Ui,
     rect: Rect,
     back: bool,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     entry: &InstanceEntry,
     catalog: &Catalog,
-    staged: &StagedMods,
+    staged: &StagedModules,
     cache: &mut Option<ModelCache>,
 ) -> Click {
     let Some(selected) = view.selected.clone() else {
@@ -5026,7 +5045,7 @@ fn paint_details(
     );
     body.set_clip_rect(inner);
     egui::ScrollArea::vertical()
-        .id_salt(("mods-detail", selected))
+        .id_salt(("modules-detail", selected))
         .max_height(inner.height())
         .auto_shrink([false, false])
         .show(&mut body, |ui| {
@@ -5039,7 +5058,7 @@ fn paint_details(
 fn paint_detail_body(
     ui: &mut Ui,
     detail: &Detail,
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     pushed: bool,
 ) -> Click {
     let p = theme::palette(ui.ctx());
@@ -5059,7 +5078,7 @@ fn paint_detail_body(
     }
     ui.add_space(10.0);
     paint_detail_facts(ui, detail, &p);
-    // Pinning a package another mod pulls in would make it direct; that is not this control.
+    // Pinning a package another module pulls in would make it direct; that is not this control.
     let pinnable = detail.direct || (!detail.installed && !detail.unresolved);
     if pinnable && !detail.versions.is_empty() && !detail.removing {
         ui.add_space(10.0);
@@ -5148,7 +5167,7 @@ fn detail_status(detail: &Detail, p: &Palette) -> (String, Color32) {
         let name = detail
             .required_note
             .clone()
-            .unwrap_or_else(|| "another mod".to_owned());
+            .unwrap_or_else(|| "another module".to_owned());
         (format!("Required by {name}"), p.text_muted)
     } else if detail.installed {
         ("Installed".to_owned(), p.ok)
@@ -5210,9 +5229,9 @@ fn remove_block_tip(detail: &Detail) -> String {
     if let Some(bundle) = &detail.included_by {
         format!("Included by {bundle}; remove the bundle")
     } else if let Some(name) = &detail.required_note {
-        format!("Required by {name}; remove that mod")
+        format!("Required by {name}; remove that module")
     } else {
-        "Required by another mod; remove that mod".to_owned()
+        "Required by another module; remove that module".to_owned()
     }
 }
 
@@ -5262,7 +5281,7 @@ fn paint_detail_facts(ui: &mut Ui, detail: &Detail, p: &Palette) {
         fact_row(ui, "Source", &detail.source, p);
     }
     ui.add_space(4.0);
-    fact_row(ui, "Mod API", &detail.mod_api, p);
+    fact_row(ui, "Module API", &detail.module_api, p);
 }
 
 fn fact_row(ui: &mut Ui, key: &str, value: &str, p: &Palette) {
@@ -5331,7 +5350,7 @@ fn paint_version_picker(ui: &mut Ui, detail: &Detail, p: &Palette) -> Click {
         Some(version) => version.clone(),
         None => "Pin version".to_owned(),
     };
-    egui::ComboBox::from_id_salt(("mod-pin", detail.id.as_str()))
+    egui::ComboBox::from_id_salt(("module-pin", detail.id.as_str()))
         .width(ui.available_width())
         .truncate()
         .selected_text(
@@ -5359,7 +5378,7 @@ fn paint_detail_links(
     ui: &mut Ui,
     heading: &str,
     rows: &[RevRef],
-    view: &mut InstanceModsUi,
+    view: &mut InstanceModulesUi,
     pushed: bool,
     p: &Palette,
 ) {
@@ -5412,7 +5431,7 @@ fn detail_link(ui: &mut Ui, kind: &str, name: &str, version: &str, p: &Palette) 
     response.clicked()
 }
 
-fn open_detail(view: &mut InstanceModsUi, id: &str, pushed: bool) {
+fn open_detail(view: &mut InstanceModulesUi, id: &str, pushed: bool) {
     view.selected = Some(id.to_owned());
     view.key_nav = false;
     if pushed {
@@ -5422,7 +5441,7 @@ fn open_detail(view: &mut InstanceModsUi, id: &str, pushed: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::StagedMods;
+    use super::StagedModules;
     use super::predict;
     use crate::gui::backend::{Backend, DemoBackend, Loaded};
 
@@ -5441,19 +5460,19 @@ mod tests {
             .find(|entry| entry.card.name == "modded")
             .cloned()
             .expect("modded instance");
-        let mods = match backend.available_mods("modded") {
+        let modules = match backend.available_modules("modded") {
             Loaded::Ready(data) => data.0.clone(),
             Loaded::Idle => panic!("catalogue idle"),
             Loaded::Loading => panic!("catalogue loading"),
             Loaded::Err(message) => panic!("catalogue failed: {message}"),
         };
-        let mut staged = StagedMods::default();
+        let mut staged = StagedModules::default();
         staged.add.push("pwc.rivers".to_owned());
         staged.remove.push("pwc.soundscape".to_owned());
         staged.remove.push("pwc.ambient-audio".to_owned());
         let impact = predict(
             &entry.card.packages,
-            &mods,
+            &modules,
             entry.card.game.api.as_deref(),
             &staged,
         );
@@ -5511,7 +5530,7 @@ mod tests {
             super::add_pill_text("pwc.rivers", &impact),
             "Will be added · Material Names (library)"
         );
-        let avail = super::index_available(&mods);
+        let avail = super::index_available(&modules);
         let by_pkg = super::index_packages(&entry.card.packages);
         let facts = super::Facts {
             impact: &impact,
@@ -5522,17 +5541,17 @@ mod tests {
         assert_eq!(super::unused_count("pwc.soundscape", &facts), 1);
         assert_eq!(super::unused_count("pwc.ambient-audio", &facts), 1);
         let counts = super::bar_counts(&staged, &entry.card.packages, Some(&impact));
-        assert_eq!(counts.mods, 1);
+        assert_eq!(counts.modules, 1);
         assert_eq!(counts.deps, 1);
         assert_eq!(counts.leaving, 2);
         assert_eq!(counts.unused, 1);
         assert_eq!(counts.updates, 0);
 
-        let mut only_sound = StagedMods::default();
+        let mut only_sound = StagedModules::default();
         only_sound.remove.push("pwc.soundscape".to_owned());
         let alone = predict(
             &entry.card.packages,
-            &mods,
+            &modules,
             entry.card.game.api.as_deref(),
             &only_sound,
         );
@@ -5543,11 +5562,11 @@ mod tests {
         assert!(alone.orphans.iter().all(|line| line.id != "pwc.audio-core"));
         assert!(alone.removes.iter().all(|line| line.id != "pwc.audio-core"));
 
-        let mut rail = StagedMods::default();
+        let mut rail = StagedModules::default();
         rail.add.push("pwc.rail-network".to_owned());
         let incompatible = predict(
             &entry.card.packages,
-            &mods,
+            &modules,
             entry.card.game.api.as_deref(),
             &rail,
         );

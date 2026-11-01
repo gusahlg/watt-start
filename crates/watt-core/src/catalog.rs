@@ -1,5 +1,5 @@
 //! Read-only views for front ends: instances with their metadata, locked packages and status,
-//! and the mods an instance could add. Nothing here writes; everything may be slow (it reads
+//! and the modules an instance could add. Nothing here writes; everything may be slow (it reads
 //! the store, packages repositories on the fly, runs git), so front ends call it off the UI
 //! thread.
 
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use pwc_manifest::{InstanceManifest, Lockfile, ModKind, PackageId};
+use pwc_manifest::{InstanceManifest, Lockfile, PackageId, PackageKind};
 use pwc_store::Store;
 
 use crate::binding;
@@ -47,7 +47,7 @@ pub struct PackageCard {
     pub name: String,
     /// Locked version.
     pub version: String,
-    /// "mod", "library" or "bundle".
+    /// "module", "library" or "bundle".
     pub kind: String,
     /// Manifest description.
     pub description: String,
@@ -72,7 +72,7 @@ pub struct PackageCard {
 pub struct GameInfo {
     /// Game version from the lock ("0.6.1").
     pub version: Option<String>,
-    /// Mod API version from the lock.
+    /// Module API version from the lock.
     pub api: Option<String>,
     /// Game commit from the lock.
     pub revision: Option<String>,
@@ -85,7 +85,7 @@ pub struct GameInfo {
     /// Engine commit (managed: the pin; linked/pwc-default: the sibling checkout's HEAD).
     pub engine_revision: Option<String>,
     /// Package manager commit (managed instances).
-    pub mods_revision: Option<String>,
+    pub modules_revision: Option<String>,
     /// The lock's environment hash.
     pub environment: Option<String>,
 }
@@ -222,7 +222,7 @@ fn load_instance_with(
     if let Some(lock) = &lock {
         let mut in_bundles: BTreeMap<&PackageId, Vec<String>> = BTreeMap::new();
         for p in &lock.packages {
-            if p.kind == ModKind::Bundle {
+            if p.kind == PackageKind::Bundle {
                 for dep in &p.dependencies {
                     in_bundles.entry(dep).or_default().push(p.id.to_string());
                 }
@@ -268,7 +268,7 @@ fn load_instance_with(
                 version: p.version.to_string(),
                 kind: p.kind.as_str().to_owned(),
                 description,
-                direct: instance.manifest.mods.contains_key(&p.id),
+                direct: instance.manifest.modules.contains_key(&p.id),
                 categories,
                 authors,
                 license,
@@ -315,8 +315,8 @@ fn game_info(meta: &Meta, lock: Option<&Lockfile>) -> GameInfo {
         dirty: lock.pwc.dirty,
         branch: branch_of(meta, source_dir.as_deref()),
         engine_revision: engine_revision_of(meta, source_dir.as_deref()),
-        mods_revision: match &meta.source {
-            Binding::Managed { pin: Some(pin), .. } => Some(pin.mods.clone()),
+        modules_revision: match &meta.source {
+            Binding::Managed { pin: Some(pin), .. } => Some(pin.modules.clone()),
             _ => None,
         },
         environment: Some(lock.environment.clone()),
@@ -373,7 +373,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// A mod an instance could add.
+/// A module an instance could add.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AvailableMod {
     /// Package id.
@@ -384,7 +384,7 @@ pub struct AvailableMod {
     pub version: String,
     /// Every known version, newest first.
     pub versions: Vec<String>,
-    /// "mod", "library" or "bundle".
+    /// "module", "library" or "bundle".
     pub kind: String,
     /// Description.
     pub description: String,
@@ -404,10 +404,10 @@ pub struct AvailableMod {
     pub pwc_api: Option<String>,
 }
 
-/// The mods offered to an instance: its resolved source's repositories plus the store
+/// The modules offered to an instance: its resolved source's repositories plus the store
 /// (`pwc_instance::Available::scan`), newest version per id, sorted by name. Libraries are
 /// included (front ends usually hide them). Returns discovery warnings too.
-pub fn available_mods(
+pub fn available_modules(
     paths: &Paths,
     settings: &Settings,
     card: &InstanceCard,
@@ -423,7 +423,7 @@ pub fn available_mods(
         .context("cannot scan the configured repositories")?;
     let warnings = available.warnings.clone();
 
-    let mut mods: Vec<AvailableMod> = available
+    let mut modules: Vec<AvailableMod> = available
         .by_id()
         .into_iter()
         .filter_map(|(id, versions)| {
@@ -450,7 +450,7 @@ pub fn available_mods(
                 authors: m.package.authors.clone(),
                 license: m.package.license.clone(),
                 dependencies: m.dependencies.keys().map(|d| d.to_string()).collect(),
-                members: if m.kind() == ModKind::Bundle {
+                members: if m.kind() == PackageKind::Bundle {
                     m.dependencies.keys().map(|d| d.to_string()).collect()
                 } else {
                     Vec::new()
@@ -459,6 +459,6 @@ pub fn available_mods(
             })
         })
         .collect();
-    mods.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
-    Ok((mods, warnings))
+    modules.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    Ok((modules, warnings))
 }

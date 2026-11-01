@@ -278,12 +278,12 @@ pub(crate) fn source_problem(source: &SourceChoice) -> Option<&'static str> {
     }
 }
 
-/// A fresh managed source on `channel`, with engine and mods refs left on `auto`.
+/// A fresh managed source on `channel`, with engine and modules refs left on `auto`.
 pub(crate) fn fresh_managed(channel: &str) -> SourceChoice {
     SourceChoice::Managed {
         channel: channel.to_owned(),
         engine_ref: AUTO.to_owned(),
-        mods_ref: AUTO.to_owned(),
+        modules_ref: AUTO.to_owned(),
     }
 }
 

@@ -57,7 +57,7 @@
             wrapProgram "$out/bin/watt-start" --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.git ]}"
           '';
           meta = {
-            description = "Instances, mods, one-click updates and builds for Project Watt Cubed";
+            description = "Instances, modules, one-click updates and builds for Project Watt Cubed";
             license = pkgs.lib.licenses.agpl3Plus;
             mainProgram = "watt-start";
           };

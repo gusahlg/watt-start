@@ -21,8 +21,8 @@ use super::{Backend, InstanceEntry, Loaded, MetaEdit, RunningOp, read_log_tail};
 
 /// `catalog::scan_instances` + `status::compute` for every instance, plus the unreadable ones.
 type CatalogResult = Result<(Vec<Arc<InstanceEntry>>, Vec<(String, String)>), String>;
-/// `catalog::available_mods`.
-type ModsResult = Result<(Vec<AvailableMod>, Vec<String>), String>;
+/// `catalog::available_modules`.
+type ModulesResult = Result<(Vec<AvailableMod>, Vec<String>), String>;
 /// `(name, busy, running pid)` from [`status::liveness`].
 type LivenessResult = Vec<(String, bool, Option<u32>)>;
 
@@ -60,12 +60,12 @@ impl<T: Send + 'static> Job<T> {
     }
 }
 
-/// Mod catalogue load tagged with the instance and epoch it was started for.
+/// Module catalogue load tagged with the instance and epoch it was started for.
 #[allow(dead_code)]
-struct ModsJob {
+struct ModulesJob {
     instance: String,
     epoch: u64,
-    job: Job<ModsResult>,
+    job: Job<ModulesResult>,
 }
 
 /// One cached on-disk log tail.
@@ -98,15 +98,15 @@ pub struct RealBackend {
     /// `refresh` was asked for while a scan was already running. Start another when it lands.
     refresh_again: bool,
     liveness_job: Option<Job<LivenessResult>>,
-    mods_instance: Option<String>,
-    /// Bumped by [`RealBackend::invalidate_mods`]. A job is tagged with the value at spawn.
-    mods_epoch: u64,
-    /// Epoch of the catalogue currently in `mods`, when it is [`Loaded::Ready`].
-    mods_loaded_epoch: u64,
-    mods: Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>,
-    mods_job: Option<ModsJob>,
+    modules_instance: Option<String>,
+    /// Bumped by [`RealBackend::invalidate_modules`]. A job is tagged with the value at spawn.
+    modules_epoch: u64,
+    /// Epoch of the catalogue currently in `modules`, when it is [`Loaded::Ready`].
+    modules_loaded_epoch: u64,
+    modules: Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>>,
+    modules_job: Option<ModulesJob>,
     /// The catalogue should reload once the in-flight catalog scan lands, so it sees the new card.
-    reload_mods_after_refresh: bool,
+    reload_modules_after_refresh: bool,
     branches: Loaded<Vec<BranchInfo>>,
     branches_job: Option<Job<Result<Vec<BranchInfo>, String>>>,
     doctor: Loaded<Vec<Check>>,
@@ -134,12 +134,12 @@ impl RealBackend {
             refresh_job: None,
             refresh_again: false,
             liveness_job: None,
-            mods_instance: None,
-            mods_epoch: 0,
-            mods_loaded_epoch: 0,
-            mods: Loaded::Idle,
-            mods_job: None,
-            reload_mods_after_refresh: false,
+            modules_instance: None,
+            modules_epoch: 0,
+            modules_loaded_epoch: 0,
+            modules: Loaded::Idle,
+            modules_job: None,
+            reload_modules_after_refresh: false,
             branches: Loaded::Idle,
             branches_job: None,
             doctor: Loaded::Idle,
@@ -154,13 +154,13 @@ impl RealBackend {
         Ok(backend)
     }
 
-    /// Start a mod-catalogue load for `instance` at the current epoch.
+    /// Start a module-catalogue load for `instance` at the current epoch.
     ///
     /// `fresh` replaces whatever is showing (an instance switch). Otherwise the previous
     /// [`Loaded::Ready`] stays up until the new scan lands.
-    fn begin_mods_load(&mut self, instance: &str, fresh: bool) {
+    fn begin_modules_load(&mut self, instance: &str, fresh: bool) {
         if fresh {
-            self.mods = Loaded::Loading;
+            self.modules = Loaded::Loading;
         }
         let Some(card) = self
             .instances
@@ -168,20 +168,20 @@ impl RealBackend {
             .find(|entry| entry.card.name == instance)
             .map(|entry| entry.card.clone())
         else {
-            self.mods = Loaded::Err("instance not found".to_owned());
-            self.mods_job = None;
+            self.modules = Loaded::Err("instance not found".to_owned());
+            self.modules_job = None;
             return;
         };
-        let epoch = self.mods_epoch;
+        let epoch = self.modules_epoch;
         let paths = self.paths.clone();
         let settings = self.settings.clone();
         let ctx = Arc::clone(&self.ui_ctx);
         let instance_name = instance.to_owned();
-        self.mods_job = Some(ModsJob {
+        self.modules_job = Some(ModulesJob {
             instance: instance_name,
             epoch,
             job: Job::spawn(ctx, move || {
-                catalog::available_mods(&paths, &settings, &card).map_err(|e| e.to_string())
+                catalog::available_modules(&paths, &settings, &card).map_err(|e| e.to_string())
             }),
         });
     }
@@ -209,7 +209,7 @@ impl Backend for RealBackend {
             self.load_errors
                 .push(("settings".to_owned(), e.to_string()));
         }
-        self.invalidate_mods();
+        self.invalidate_modules();
     }
 
     fn tick(&mut self) -> bool {
@@ -229,11 +229,11 @@ impl Backend for RealBackend {
             changed = true;
             if self.refresh_again {
                 self.refresh();
-            } else if self.reload_mods_after_refresh {
-                self.reload_mods_after_refresh = false;
-                self.mods_epoch = self.mods_epoch.wrapping_add(1);
-                if let Some(instance) = self.mods_instance.clone() {
-                    self.begin_mods_load(&instance, false);
+            } else if self.reload_modules_after_refresh {
+                self.reload_modules_after_refresh = false;
+                self.modules_epoch = self.modules_epoch.wrapping_add(1);
+                if let Some(instance) = self.modules_instance.clone() {
+                    self.begin_modules_load(&instance, false);
                 }
             }
         }
@@ -261,17 +261,18 @@ impl Backend for RealBackend {
             }
             changed |= flipped;
         }
-        let mods_result = self.mods_job.as_ref().and_then(|job| job.job.poll());
-        if let Some(result) = mods_result {
-            let ModsJob {
+        let modules_result = self.modules_job.as_ref().and_then(|job| job.job.poll());
+        if let Some(result) = modules_result {
+            let ModulesJob {
                 instance, epoch, ..
-            } = self.mods_job.take().expect("polled above");
-            if self.mods_instance.as_deref() == Some(instance.as_str()) && epoch == self.mods_epoch
+            } = self.modules_job.take().expect("polled above");
+            if self.modules_instance.as_deref() == Some(instance.as_str())
+                && epoch == self.modules_epoch
             {
                 // An error counts as loaded too, or the next frame would rescan at once.
-                // `refresh` and `invalidate_mods` retry it.
-                self.mods_loaded_epoch = epoch;
-                self.mods = match result {
+                // `refresh` and `invalidate_modules` retry it.
+                self.modules_loaded_epoch = epoch;
+                self.modules = match result {
                     Ok(value) => Loaded::Ready(Arc::new(value)),
                     Err(error) => Loaded::Err(error),
                 };
@@ -328,14 +329,14 @@ impl Backend for RealBackend {
     }
 
     fn refresh(&mut self) {
-        // A catalog rescan must not throw away the mod catalogue. Callers that changed mods,
-        // the source, or settings call [`Backend::invalidate_mods`] themselves.
+        // A catalog rescan must not throw away the module catalogue. Callers that changed modules,
+        // the source, or settings call [`Backend::invalidate_modules`] themselves.
         if matches!(self.branches, Loaded::Err(_)) {
             self.branches = Loaded::Idle;
         }
-        // A failed mod catalogue is retried the next time the Mods tab asks for it.
-        if matches!(self.mods, Loaded::Err(_)) {
-            self.mods_epoch = self.mods_epoch.wrapping_add(1);
+        // A failed module catalogue is retried the next time the Modules tab asks for it.
+        if matches!(self.modules, Loaded::Err(_)) {
+            self.modules_epoch = self.modules_epoch.wrapping_add(1);
         }
         if self.refresh_job.is_some() {
             self.refresh_again = true;
@@ -402,25 +403,28 @@ impl Backend for RealBackend {
         Ok(meta)
     }
 
-    fn available_mods(&mut self, instance: &str) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
-        if self.mods_instance.as_deref() != Some(instance) {
-            self.mods_instance = Some(instance.to_owned());
-            self.mods_epoch = self.mods_epoch.wrapping_add(1);
-            self.begin_mods_load(instance, true);
-        } else if self.mods_job.is_none() && self.mods_loaded_epoch != self.mods_epoch {
-            self.begin_mods_load(instance, false);
+    fn available_modules(
+        &mut self,
+        instance: &str,
+    ) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
+        if self.modules_instance.as_deref() != Some(instance) {
+            self.modules_instance = Some(instance.to_owned());
+            self.modules_epoch = self.modules_epoch.wrapping_add(1);
+            self.begin_modules_load(instance, true);
+        } else if self.modules_job.is_none() && self.modules_loaded_epoch != self.modules_epoch {
+            self.begin_modules_load(instance, false);
         }
-        self.mods.clone()
+        self.modules.clone()
     }
 
-    fn invalidate_mods(&mut self) {
+    fn invalidate_modules(&mut self) {
         if self.refresh_job.is_some() {
-            self.reload_mods_after_refresh = true;
+            self.reload_modules_after_refresh = true;
             return;
         }
-        self.mods_epoch = self.mods_epoch.wrapping_add(1);
-        if let Some(instance) = self.mods_instance.clone() {
-            self.begin_mods_load(&instance, false);
+        self.modules_epoch = self.modules_epoch.wrapping_add(1);
+        if let Some(instance) = self.modules_instance.clone() {
+            self.begin_modules_load(&instance, false);
         }
     }
 
@@ -510,7 +514,7 @@ impl Backend for RealBackend {
 
     fn loading(&self) -> bool {
         self.refresh_job.is_some()
-            || self.mods_job.is_some()
+            || self.modules_job.is_some()
             || self.branches_job.is_some()
             || self.doctor_job.is_some()
     }

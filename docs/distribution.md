@@ -5,7 +5,7 @@ building it. The install commands users see are in the README.
 
 ## The barrier
 
-The hard part of installing Project Watt Cubed is not the launcher's package format. Mods
+The hard part of installing Project Watt Cubed is not the launcher's package format. Modules
 are Rust crates compiled into the game, so the first launch of an instance is a 15–40 minute
 build and it needs a working toolchain: git, rustc, a C++ linker, a Vulkan driver. An
 installer that only unpacks `watt-start` leaves that wall where it is. The work below is

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use pwc_manifest::{
-    InstanceManifest, InstanceName, ModRequirement, ModSource, PackageId, VersionReq,
+    InstanceManifest, InstanceName, ModuleRequirement, ModuleSource, PackageId, VersionReq,
 };
 use watt_core::catalog::{AvailableMod, GameInfo, InstanceCard, PackageCard};
 use watt_core::doctor::{Check, Level};
@@ -95,7 +95,7 @@ fn available(
     }
 }
 
-/// Mods requested in the manifest but absent from the lock. Only the modded fixture has one,
+/// Modules requested in the manifest but absent from the lock. Only the modded fixture has one,
 /// so every other instance keeps an empty manifest.
 fn unresolved_ids(name: &str) -> &'static [&'static str] {
     match name {
@@ -104,27 +104,27 @@ fn unresolved_ids(name: &str) -> &'static [&'static str] {
     }
 }
 
-fn manifest_for(name: &str, mods: &[PackageCard]) -> InstanceManifest {
+fn manifest_for(name: &str, modules: &[PackageCard]) -> InstanceManifest {
     let mut manifest = InstanceManifest::new(InstanceName::parse(name).unwrap(), VersionReq::STAR);
     let missing = unresolved_ids(name);
     if missing.is_empty() {
         return manifest;
     }
-    for pkg in mods.iter().filter(|pkg| pkg.direct) {
-        manifest.mods.insert(
+    for pkg in modules.iter().filter(|pkg| pkg.direct) {
+        manifest.modules.insert(
             PackageId::parse(&pkg.id).expect("fixture id"),
-            ModRequirement {
+            ModuleRequirement {
                 version: VersionReq::STAR,
-                source: ModSource::Registry,
+                source: ModuleSource::Registry,
             },
         );
     }
     for id in missing {
-        manifest.mods.insert(
+        manifest.modules.insert(
             PackageId::parse(id).expect("fixture id"),
-            ModRequirement {
+            ModuleRequirement {
                 version: VersionReq::STAR,
-                source: ModSource::Registry,
+                source: ModuleSource::Registry,
             },
         );
     }
@@ -135,10 +135,10 @@ fn pin(game_ref: &str, seed: &str) -> Pin {
     Pin {
         game: fake_sha(&format!("{seed}-game")),
         engine: fake_sha(&format!("{seed}-engine")),
-        mods: fake_sha(&format!("{seed}-mods")),
+        modules: fake_sha(&format!("{seed}-modules")),
         game_ref: game_ref.to_owned(),
         engine_ref: game_ref.to_owned(),
-        mods_ref: game_ref.to_owned(),
+        modules_ref: game_ref.to_owned(),
     }
 }
 
@@ -149,7 +149,7 @@ fn generation(id: u64, created: u64, version: &str, seed: &str, built: bool) -> 
         source: Binding::Managed {
             channel: "main".into(),
             engine_ref: watt_core::meta::AUTO.into(),
-            mods_ref: watt_core::meta::AUTO.into(),
+            modules_ref: watt_core::meta::AUTO.into(),
             pin: Some(pin("main", seed)),
         },
         pwc_source: PathBuf::from("/var/lib/pwc/sources/v1/pwc-demo"),
@@ -178,7 +178,7 @@ struct Fixture {
     binding: Binding,
     readiness: Readiness,
     running: Option<u32>,
-    mods: Vec<PackageCard>,
+    modules: Vec<PackageCard>,
     updates: Option<Vec<RepoLog>>,
 }
 
@@ -200,7 +200,7 @@ fn fixtures() -> Vec<Fixture> {
             "pwc.hotbar",
             "Quick Hotbar",
             "2.1.0",
-            "mod",
+            "module",
             "A faster, configurable hotbar.",
             false,
             &["interface"],
@@ -212,7 +212,7 @@ fn fixtures() -> Vec<Fixture> {
             "pwc.waypoints",
             "Waypoints",
             "1.0.3",
-            "mod",
+            "module",
             "Place and share waypoints.",
             false,
             &["gameplay", "interface"],
@@ -238,7 +238,7 @@ fn fixtures() -> Vec<Fixture> {
         "pwc.dev-toolkit",
         "Developer Toolkit",
         "0.3.0",
-        "mod",
+        "module",
         "Debug overlays, chunk borders, teleport.",
         true,
         &["tools"],
@@ -257,14 +257,14 @@ fn fixtures() -> Vec<Fixture> {
             binding: Binding::Managed {
                 channel: "main".into(),
                 engine_ref: watt_core::meta::AUTO.into(),
-                mods_ref: watt_core::meta::AUTO.into(),
+                modules_ref: watt_core::meta::AUTO.into(),
                 pin: Some(pin("main", "survival")),
             },
             readiness: Readiness::Ready {
                 game: PathBuf::from("/var/lib/pwc/cache/survival/game"),
             },
             running: None,
-            mods: dev_toolkit.clone(),
+            modules: dev_toolkit.clone(),
             updates: None,
         },
         Fixture {
@@ -276,14 +276,14 @@ fn fixtures() -> Vec<Fixture> {
             binding: Binding::Managed {
                 channel: "experimental".into(),
                 engine_ref: watt_core::meta::AUTO.into(),
-                mods_ref: watt_core::meta::AUTO.into(),
+                modules_ref: watt_core::meta::AUTO.into(),
                 pin: Some(pin("experimental", "frontier")),
             },
             readiness: Readiness::Ready {
                 game: PathBuf::from("/var/lib/pwc/cache/frontier/game"),
             },
             running: None,
-            mods: essentials.clone(),
+            modules: essentials.clone(),
             updates: Some(vec![
                 RepoLog {
                     repo: Repo::Game,
@@ -329,7 +329,7 @@ fn fixtures() -> Vec<Fixture> {
                 game: PathBuf::from("/var/lib/pwc/cache/dev-checkout/game"),
             },
             running: None,
-            mods: essentials.clone(),
+            modules: essentials.clone(),
             updates: None,
         },
         Fixture {
@@ -343,7 +343,7 @@ fn fixtures() -> Vec<Fixture> {
                 game: PathBuf::from("/var/lib/pwc/cache/pwc-cli/game"),
             },
             running: None,
-            mods: essentials.clone(),
+            modules: essentials.clone(),
             updates: None,
         },
         Fixture {
@@ -355,14 +355,14 @@ fn fixtures() -> Vec<Fixture> {
             binding: Binding::Managed {
                 channel: "main".into(),
                 engine_ref: watt_core::meta::AUTO.into(),
-                mods_ref: watt_core::meta::AUTO.into(),
+                modules_ref: watt_core::meta::AUTO.into(),
                 pin: Some(pin("main", "classic")),
             },
             readiness: Readiness::NeedsBuild {
-                reason: "3 mods changed".into(),
+                reason: "3 modules changed".into(),
             },
             running: None,
-            mods: essentials.clone(),
+            modules: essentials.clone(),
             updates: None,
         },
         Fixture {
@@ -374,14 +374,14 @@ fn fixtures() -> Vec<Fixture> {
             binding: Binding::Managed {
                 channel: "mp-fix".into(),
                 engine_ref: watt_core::meta::AUTO.into(),
-                mods_ref: watt_core::meta::AUTO.into(),
+                modules_ref: watt_core::meta::AUTO.into(),
                 pin: Some(pin("mp-fix", "flaky")),
             },
             readiness: Readiness::Broken {
-                reason: "pwc.hotbar requires pwc-mod-api ^0.5, found 0.4.2".into(),
+                reason: "pwc.hotbar requires pwc-module-api ^0.5, found 0.4.2".into(),
             },
             running: None,
-            mods: essentials.clone(),
+            modules: essentials.clone(),
             updates: None,
         },
         Fixture {
@@ -393,14 +393,14 @@ fn fixtures() -> Vec<Fixture> {
             binding: Binding::Managed {
                 channel: "main".into(),
                 engine_ref: watt_core::meta::AUTO.into(),
-                mods_ref: watt_core::meta::AUTO.into(),
+                modules_ref: watt_core::meta::AUTO.into(),
                 pin: Some(pin("main", "modded")),
             },
             readiness: Readiness::Ready {
                 game: PathBuf::from("/var/lib/pwc/cache/modded/game"),
             },
             running: None,
-            mods: modded_packages(),
+            modules: modded_packages(),
             updates: None,
         },
     ]
@@ -438,7 +438,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.ambient-audio",
             "Ambient Audio",
             "1.0.0",
-            "mod",
+            "module",
             "Biome-aware ambient soundscapes.",
             true,
             &["audio"],
@@ -450,7 +450,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.backpacks",
             "Backpacks",
             "1.2.0",
-            "mod",
+            "module",
             "Carry a second inventory on your back.",
             true,
             &["gameplay"],
@@ -462,7 +462,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.better-caves",
             "Better Caves",
             "1.2.0",
-            "mod",
+            "module",
             "Richer cave generation with new biomes.",
             true,
             &["worldgen"],
@@ -474,7 +474,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.better-lighting",
             "Better Lighting",
             "1.1.2",
-            "mod",
+            "module",
             "Soft sun, tinted torches and light shafts.",
             true,
             &["visuals"],
@@ -486,7 +486,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.boats",
             "Boats",
             "0.4.0",
-            "mod",
+            "module",
             "Paddle the rivers and the open water.",
             true,
             &["gameplay"],
@@ -498,7 +498,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.crop-boost",
             "Crop Boost",
             "0.3.1",
-            "mod",
+            "module",
             "Faster growth when the soil is watered.",
             true,
             &["farming"],
@@ -510,7 +510,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.deep-ores",
             "Deep Ores",
             "0.4.2",
-            "mod",
+            "module",
             "Richer deposits below the deepslate line.",
             true,
             &["worldgen"],
@@ -522,7 +522,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.farming-plus",
             "Farming Expansion",
             "0.8.0",
-            "mod",
+            "module",
             "New crops, irrigation and a seasonal calendar.",
             true,
             &["farming"],
@@ -534,7 +534,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.inventory-sort",
             "Inventory Sorting",
             "0.9.0",
-            "mod",
+            "module",
             "Stack, sort and pin slots in every container.",
             true,
             &["gameplay"],
@@ -546,7 +546,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.lanterns",
             "Lanterns",
             "0.9.0",
-            "mod",
+            "module",
             "Placeable lanterns with a warm falloff.",
             true,
             &["visuals"],
@@ -558,7 +558,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.minimap",
             "Minimap",
             "1.3.0",
-            "mod",
+            "module",
             "A corner map of the chunks around you.",
             true,
             &["interface"],
@@ -570,7 +570,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.more-ores",
             "More Ores",
             "1.0.0",
-            "mod",
+            "module",
             "Copper, tin and the alloys the base game left out.",
             true,
             &["worldgen"],
@@ -582,7 +582,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.night-vision",
             "Night Vision",
             "0.5.0",
-            "mod",
+            "module",
             "See in the dark without a torch in hand.",
             true,
             &["visuals"],
@@ -594,7 +594,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.ore-veins",
             "Ore Veins",
             "0.7.0",
-            "mod",
+            "module",
             "Metals cluster in veins instead of single cubes.",
             true,
             &["worldgen"],
@@ -606,7 +606,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.shader-pack",
             "Shader Pack",
             "0.8.4",
-            "mod",
+            "module",
             "Volumetric lighting and soft shadows.",
             true,
             &["visuals"],
@@ -618,7 +618,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.signs-plus",
             "Signs Plus",
             "1.0.0",
-            "mod",
+            "module",
             "Tinted signs with extra lines of text.",
             true,
             &["gameplay"],
@@ -630,7 +630,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.soundscape",
             "Field Recordings",
             "1.0.1",
-            "mod",
+            "module",
             "Footsteps, weather and caves captured on location.",
             true,
             &["audio"],
@@ -642,7 +642,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.weather-plus",
             "Weather Plus",
             "0.5.2",
-            "mod",
+            "module",
             "Storms, fog banks and seasonal cycles.",
             true,
             &["worldgen", "visuals"],
@@ -654,7 +654,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.hotbar",
             "Quick Hotbar",
             "2.1.0",
-            "mod",
+            "module",
             "A faster, configurable hotbar.",
             false,
             &["interface"],
@@ -666,7 +666,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.waypoints",
             "Waypoints",
             "1.0.3",
-            "mod",
+            "module",
             "Place and share waypoints.",
             false,
             &["gameplay", "interface"],
@@ -678,7 +678,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.trail-map",
             "Trail Map",
             "0.6.0",
-            "mod",
+            "module",
             "Breadcrumbs and named pins along a route.",
             false,
             &["interface"],
@@ -690,7 +690,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.field-notes",
             "Field Notes",
             "0.6.0",
-            "mod",
+            "module",
             "A journal tied to the spot you wrote it.",
             false,
             &["gameplay"],
@@ -702,8 +702,8 @@ fn modded_packages() -> Vec<PackageCard> {
             "pwc.geology",
             "Geology",
             "1.1.0",
-            "mod",
-            "Shared strata tables the ore mods build on.",
+            "module",
+            "Shared strata tables the ore modules build on.",
             false,
             &["worldgen"],
             &["ore-guild"],
@@ -739,7 +739,7 @@ fn modded_packages() -> Vec<PackageCard> {
             "Farm Lib",
             "0.3.0",
             "library",
-            "Soil, moisture and crop stages for farm mods.",
+            "Soil, moisture and crop stages for farm modules.",
             false,
             &["library"],
             &["field-lab"],
@@ -831,7 +831,7 @@ fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
             op: OpKind::Build,
             finished: now - 1800,
             ok: false,
-            error: Some("resolving mods: pwc.hotbar requires pwc-mod-api ^0.5".into()),
+            error: Some("resolving modules: pwc.hotbar requires pwc-module-api ^0.5".into()),
             log: Some(PathBuf::from("/var/lib/pwc/watt-start/logs/demo.log")),
         });
     }
@@ -848,10 +848,10 @@ fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
     let card = InstanceCard {
         name: f.name.to_owned(),
         dir: PathBuf::from(format!("/var/lib/pwc/instances/{}", f.name)),
-        manifest: manifest_for(f.name, &f.mods),
+        manifest: manifest_for(f.name, &f.modules),
         meta: meta.clone(),
         lock: None,
-        packages: f.mods,
+        packages: f.modules,
         game: GameInfo {
             version: Some("0.6.1".into()),
             api: Some("0.4.2".into()),
@@ -860,7 +860,7 @@ fn build_entry(f: Fixture, now: u64) -> InstanceEntry {
             source_dir: Some(PathBuf::from(format!("/var/lib/pwc/sources/v1/{}", f.name))),
             branch,
             engine_revision: pin.as_ref().map(|p| p.engine.clone()),
-            mods_revision: pin.as_ref().map(|p| p.mods.clone()),
+            modules_revision: pin.as_ref().map(|p| p.modules.clone()),
             environment: Some(format!("sha256:{}", fake_sha(f.name))),
         },
         active: f.active,
@@ -896,12 +896,12 @@ fn authored(
 }
 
 fn extra_catalog() -> Vec<AvailableMod> {
-    let mut mods = vec![
+    let mut modules = vec![
         authored(
             "pwc.minimap",
             "Minimap",
             "1.4.0",
-            "mod",
+            "module",
             "A corner map of the chunks around you.",
             &["interface"],
             "mina",
@@ -912,7 +912,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.inventory-sort",
             "Inventory Sorting",
             "0.9.0",
-            "mod",
+            "module",
             "Stack, sort and pin slots in every container.",
             &["gameplay"],
             "gusahlg",
@@ -923,7 +923,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.better-lighting",
             "Better Lighting",
             "1.1.2",
-            "mod",
+            "module",
             "Soft sun, tinted torches and light shafts.",
             &["visuals"],
             "lumen",
@@ -934,7 +934,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.farming-plus",
             "Farming Expansion",
             "0.8.0",
-            "mod",
+            "module",
             "New crops, irrigation and a seasonal calendar.",
             &["farming"],
             "field-lab",
@@ -945,7 +945,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.more-ores",
             "More Ores",
             "1.0.0",
-            "mod",
+            "module",
             "Copper, tin and the alloys the base game left out.",
             &["worldgen"],
             "ore-guild",
@@ -956,7 +956,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.soundscape",
             "Field Recordings",
             "1.0.1",
-            "mod",
+            "module",
             "Footsteps, weather and caves captured on location.",
             &["audio"],
             "lumen",
@@ -967,7 +967,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.ore-veins",
             "Ore Veins",
             "0.7.0",
-            "mod",
+            "module",
             "Metals cluster in veins instead of single cubes.",
             &["worldgen"],
             "ore-guild",
@@ -978,7 +978,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.deep-ores",
             "Deep Ores",
             "0.4.2",
-            "mod",
+            "module",
             "Richer deposits below the deepslate line.",
             &["worldgen"],
             "ore-guild",
@@ -989,8 +989,8 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.geology",
             "Geology",
             "1.1.0",
-            "mod",
-            "Shared strata tables the ore mods build on.",
+            "module",
+            "Shared strata tables the ore modules build on.",
             &["worldgen"],
             "ore-guild",
             &[],
@@ -1011,7 +1011,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.trail-map",
             "Trail Map",
             "0.6.0",
-            "mod",
+            "module",
             "Breadcrumbs and named pins along a route.",
             &["interface"],
             "field-lab",
@@ -1022,7 +1022,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.field-notes",
             "Field Notes",
             "0.6.0",
-            "mod",
+            "module",
             "A journal tied to the spot you wrote it.",
             &["gameplay"],
             "field-lab",
@@ -1033,7 +1033,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.backpacks",
             "Backpacks",
             "1.2.1",
-            "mod",
+            "module",
             "Carry a second inventory on your back.",
             &["gameplay"],
             "gusahlg",
@@ -1044,7 +1044,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.night-vision",
             "Night Vision",
             "0.5.0",
-            "mod",
+            "module",
             "See in the dark without a torch in hand.",
             &["visuals"],
             "lumen",
@@ -1055,7 +1055,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.crop-boost",
             "Crop Boost",
             "0.3.1",
-            "mod",
+            "module",
             "Faster growth when the soil is watered.",
             &["farming"],
             "field-lab",
@@ -1066,7 +1066,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.signs-plus",
             "Signs Plus",
             "1.0.0",
-            "mod",
+            "module",
             "Tinted signs with extra lines of text.",
             &["gameplay"],
             "mina",
@@ -1077,7 +1077,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.lanterns",
             "Lanterns",
             "0.9.0",
-            "mod",
+            "module",
             "Placeable lanterns with a warm falloff.",
             &["visuals"],
             "lumen",
@@ -1088,7 +1088,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.boats",
             "Boats",
             "0.4.0",
-            "mod",
+            "module",
             "Paddle the rivers and the open water.",
             &["gameplay"],
             "gusahlg",
@@ -1111,7 +1111,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "Farm Lib",
             "0.3.0",
             "library",
-            "Soil, moisture and crop stages for farm mods.",
+            "Soil, moisture and crop stages for farm modules.",
             &["library"],
             "field-lab",
             &[],
@@ -1121,7 +1121,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.recipe-book",
             "Recipe Book",
             "1.0.0",
-            "mod",
+            "module",
             "Every alloy and cooking recipe in one book.",
             &["gameplay"],
             "mina",
@@ -1132,7 +1132,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.clouds",
             "Better Clouds",
             "0.6.0",
-            "mod",
+            "module",
             "Layered clouds that drift with the wind.",
             &["visuals"],
             "lumen",
@@ -1143,7 +1143,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.compass",
             "Compass",
             "1.0.0",
-            "mod",
+            "module",
             "A heading marker that finds your last pin.",
             &["interface"],
             "mina",
@@ -1154,7 +1154,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.rivers",
             "Rivers",
             "0.5.0",
-            "mod",
+            "module",
             "Carves riverbeds and fills them from rainfall.",
             &["worldgen"],
             "field-lab",
@@ -1176,7 +1176,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.chisel",
             "Chisel",
             "0.2.0",
-            "mod",
+            "module",
             "Cut slopes and detail into solid cubes.",
             &["tools"],
             "kiln",
@@ -1187,7 +1187,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
             "pwc.scaffolding",
             "Scaffolding",
             "0.2.0",
-            "mod",
+            "module",
             "Temporary frames that hold you up.",
             &["tools"],
             "kiln",
@@ -1199,7 +1199,7 @@ fn extra_catalog() -> Vec<AvailableMod> {
                 "pwc.rail-network",
                 "Rail Network",
                 "0.1.0",
-                "mod",
+                "module",
                 "Lay track and haul ore to the surface.",
                 &["gameplay"],
                 "kiln",
@@ -1210,13 +1210,13 @@ fn extra_catalog() -> Vec<AvailableMod> {
             rail
         },
     ];
-    if let Some(minimap) = mods.iter_mut().find(|entry| entry.id == "pwc.minimap") {
+    if let Some(minimap) = modules.iter_mut().find(|entry| entry.id == "pwc.minimap") {
         minimap.versions = vec!["1.4.0".into(), "1.3.0".into()];
     }
-    if let Some(packs) = mods.iter_mut().find(|entry| entry.id == "pwc.backpacks") {
+    if let Some(packs) = modules.iter_mut().find(|entry| entry.id == "pwc.backpacks") {
         packs.versions = vec!["1.2.1".into(), "1.2.0".into()];
     }
-    mods
+    modules
 }
 
 /// The demo backend.
@@ -1224,9 +1224,9 @@ pub struct DemoBackend {
     settings: Settings,
     instances: Vec<Arc<InstanceEntry>>,
     updates: BTreeMap<String, Vec<RepoLog>>,
-    mods_catalog: Vec<AvailableMod>,
-    /// Built on the first [`Backend::available_mods`] call so later frames clone an `Arc`.
-    mods_ready: Option<Arc<(Vec<AvailableMod>, Vec<String>)>>,
+    modules_catalog: Vec<AvailableMod>,
+    /// Built on the first [`Backend::available_modules`] call so later frames clone an `Arc`.
+    modules_ready: Option<Arc<(Vec<AvailableMod>, Vec<String>)>>,
     doctor: Vec<Check>,
     next_op_id: u64,
     /// Launcher self-update. Never touches the network.
@@ -1252,7 +1252,7 @@ impl DemoBackend {
             instances.push(Arc::new(build_entry(f, now)));
         }
 
-        let mut mods_catalog = vec![
+        let mut modules_catalog = vec![
             available(
                 "pwc.essentials",
                 "Essentials",
@@ -1267,7 +1267,7 @@ impl DemoBackend {
                 "pwc.dev-toolkit",
                 "Developer Toolkit",
                 "0.3.0",
-                "mod",
+                "module",
                 "Debug overlays, chunk borders, teleport.",
                 &["tools"],
                 &[],
@@ -1277,7 +1277,7 @@ impl DemoBackend {
                 "pwc.better-caves",
                 "Better Caves",
                 "1.2.0",
-                "mod",
+                "module",
                 "Richer cave generation with new biomes.",
                 &["worldgen"],
                 &[],
@@ -1287,7 +1287,7 @@ impl DemoBackend {
                 "pwc.shader-pack",
                 "Shader Pack",
                 "0.8.4",
-                "mod",
+                "module",
                 "Volumetric lighting and soft shadows.",
                 &["visuals"],
                 &["pwc.ui-kit"],
@@ -1297,7 +1297,7 @@ impl DemoBackend {
                 "pwc.ambient-audio",
                 "Ambient Audio",
                 "1.0.0",
-                "mod",
+                "module",
                 "Biome-aware ambient soundscapes.",
                 &["audio"],
                 &[],
@@ -1307,7 +1307,7 @@ impl DemoBackend {
                 "pwc.waypoints",
                 "Waypoints",
                 "1.0.3",
-                "mod",
+                "module",
                 "Place and share waypoints.",
                 &["gameplay", "interface"],
                 &[],
@@ -1317,7 +1317,7 @@ impl DemoBackend {
                 "pwc.hotbar",
                 "Quick Hotbar",
                 "2.1.0",
-                "mod",
+                "module",
                 "A faster, configurable hotbar.",
                 &["interface"],
                 &["pwc.ui-kit"],
@@ -1347,7 +1347,7 @@ impl DemoBackend {
                 "pwc.auto-sort",
                 "Auto Sort",
                 "0.6.1",
-                "mod",
+                "module",
                 "Sort containers with one click.",
                 &["gameplay"],
                 &[],
@@ -1357,7 +1357,7 @@ impl DemoBackend {
                 "pwc.lan-party",
                 "LAN Party",
                 "0.2.0",
-                "mod",
+                "module",
                 "Zero-config LAN discovery.",
                 &["tools"],
                 &[],
@@ -1367,14 +1367,14 @@ impl DemoBackend {
                 "pwc.weather-plus",
                 "Weather Plus",
                 "0.5.2",
-                "mod",
+                "module",
                 "Storms, fog banks and seasonal cycles.",
                 &["worldgen", "visuals"],
                 &[],
                 &[],
             ),
         ];
-        mods_catalog.extend(extra_catalog());
+        modules_catalog.extend(extra_catalog());
 
         let doctor = vec![
             Check {
@@ -1419,8 +1419,8 @@ impl DemoBackend {
             settings: Settings::default(),
             instances,
             updates,
-            mods_catalog,
-            mods_ready: None,
+            modules_catalog,
+            modules_ready: None,
             doctor,
             next_op_id: 1,
             launcher_update: watt_core::selfupdate::UpdateStatus::with_install(
@@ -1454,13 +1454,13 @@ impl DemoBackend {
         }
     }
 
-    /// A large fixture for the frame-cost harness: `instances` sidebar rows, `mods` catalogue
+    /// A large fixture for the frame-cost harness: `instances` sidebar rows, `modules` catalogue
     /// entries, and a build op whose log already holds `log_lines` lines.
     ///
     /// Animations and the startup update check are off, so a stepped harness measures layout
     /// rather than a spinner. Only the perf test calls this.
     #[allow(dead_code)]
-    pub fn stress(instances: usize, mods: usize, log_lines: usize) -> Self {
+    pub fn stress(instances: usize, modules: usize, log_lines: usize) -> Self {
         let now = watt_core::paths::now_secs();
         let defaults = Settings::default();
         let settings = Settings {
@@ -1477,8 +1477,8 @@ impl DemoBackend {
                 .map(|i| Arc::new(stress_entry(i, now)))
                 .collect(),
             updates: BTreeMap::new(),
-            mods_catalog: (0..mods).map(stress_mod).collect(),
-            mods_ready: None,
+            modules_catalog: (0..modules).map(stress_module).collect(),
+            modules_ready: None,
             doctor: Vec::new(),
             next_op_id: 1,
             launcher_update: watt_core::selfupdate::UpdateStatus::with_install(
@@ -1506,7 +1506,7 @@ fn stress_entry(index: usize, now: u64) -> InstanceEntry {
         source: Binding::Managed {
             channel: "main".into(),
             engine_ref: watt_core::meta::AUTO.into(),
-            mods_ref: watt_core::meta::AUTO.into(),
+            modules_ref: watt_core::meta::AUTO.into(),
             pin: Some(pin("main", &name)),
         },
         generations: vec![generation(1, now, "0.6.1", &name, true)],
@@ -1532,7 +1532,7 @@ fn stress_entry(index: usize, now: u64) -> InstanceEntry {
                 source_dir: Some(PathBuf::from(format!("/var/lib/pwc/sources/v1/{name}"))),
                 branch: Some("main".into()),
                 engine_revision: Some(fake_sha(&format!("{name}-engine"))),
-                mods_revision: Some(fake_sha(&format!("{name}-mods"))),
+                modules_revision: Some(fake_sha(&format!("{name}-modules"))),
                 environment: Some(format!("sha256:{}", fake_sha(&name))),
             },
             active: index == 0,
@@ -1550,14 +1550,14 @@ fn stress_entry(index: usize, now: u64) -> InstanceEntry {
 }
 
 #[allow(dead_code)]
-fn stress_mod(index: usize) -> AvailableMod {
+fn stress_module(index: usize) -> AvailableMod {
     let id = format!("pwc.stress-{index}");
-    let name = format!("Stress Mod {index}");
+    let name = format!("Stress Module {index}");
     available(
         &id,
         &name,
         "1.0.0",
-        "mod",
+        "module",
         "Generated catalogue row for the frame-cost harness.",
         &["worldgen"],
         &[],
@@ -1611,12 +1611,15 @@ impl Backend for DemoBackend {
         Ok(entry.card.meta.clone())
     }
 
-    fn available_mods(&mut self, _instance: &str) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
-        if self.mods_ready.is_none() {
-            let ready = Arc::new((self.mods_catalog.clone(), Vec::new()));
-            self.mods_ready = Some(ready);
+    fn available_modules(
+        &mut self,
+        _instance: &str,
+    ) -> Loaded<Arc<(Vec<AvailableMod>, Vec<String>)>> {
+        if self.modules_ready.is_none() {
+            let ready = Arc::new((self.modules_catalog.clone(), Vec::new()));
+            self.modules_ready = Some(ready);
         }
-        let ready = self.mods_ready.as_ref().expect("inserted above").clone();
+        let ready = self.modules_ready.as_ref().expect("inserted above").clone();
         Loaded::Ready(ready)
     }
 
@@ -1944,11 +1947,11 @@ fn build_timeline(kind: OpKind, instance: Option<String>, fail: bool) -> Vec<(u6
     ];
 
     if fail {
-        t.push((1400, phase(Phase::Lock, "Resolving mods")));
+        t.push((1400, phase(Phase::Lock, "Resolving modules")));
         t.push((
             2100,
             Event::Warning {
-                message: "pwc.hotbar requires pwc-mod-api ^0.5, found 0.4.2".into(),
+                message: "pwc.hotbar requires pwc-module-api ^0.5, found 0.4.2".into(),
             },
         ));
         t.push((
@@ -1956,8 +1959,9 @@ fn build_timeline(kind: OpKind, instance: Option<String>, fail: bool) -> Vec<(u6
             Event::OpFinished {
                 outcome: OpOutcome::Failed {
                     phase: Some(Phase::Lock),
-                    error: "resolving mods: pwc.hotbar requires pwc-mod-api ^0.5, found 0.4.2"
-                        .into(),
+                    error:
+                        "resolving modules: pwc.hotbar requires pwc-module-api ^0.5, found 0.4.2"
+                            .into(),
                     recovery: vec![Recovery::ResetLock, Recovery::PlayLastGood],
                 },
                 duration_ms: 2100,
@@ -1966,7 +1970,7 @@ fn build_timeline(kind: OpKind, instance: Option<String>, fail: bool) -> Vec<(u6
         return t;
     }
 
-    t.push((1400, phase(Phase::Lock, "Resolving mods")));
+    t.push((1400, phase(Phase::Lock, "Resolving modules")));
     t.push((
         1400,
         Event::Changed {
@@ -2035,7 +2039,7 @@ fn build_timeline(kind: OpKind, instance: Option<String>, fail: bool) -> Vec<(u6
         install_end,
         Event::OpFinished {
             outcome: OpOutcome::Ok {
-                summary: "Built 0.6.1, 1 mod updated".into(),
+                summary: "Built 0.6.1, 1 module updated".into(),
             },
             duration_ms: install_end,
         },

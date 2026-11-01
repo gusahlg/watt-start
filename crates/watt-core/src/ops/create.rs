@@ -25,7 +25,7 @@ pub(super) fn run(
         color,
         group,
         source,
-        mods,
+        modules,
         build,
     } = request
     else {
@@ -54,9 +54,12 @@ pub(super) fn run(
         Ok(())
     })?;
 
-    for spec in mods {
-        let parsed = common::parse_mod_spec(&instance.dir, spec)?;
-        instance.manifest.mods.insert(parsed.id, parsed.requirement);
+    for spec in modules {
+        let parsed = common::parse_module_spec(&instance.dir, spec)?;
+        instance
+            .manifest
+            .modules
+            .insert(parsed.id, parsed.requirement);
     }
     instance.save().context("cannot write instance.toml")?;
 
@@ -64,11 +67,19 @@ pub(super) fn run(
         Binding::Managed {
             channel,
             engine_ref,
-            mods_ref,
+            modules_ref,
             ..
         } => {
             let outcome = update::update_managed(
-                paths, settings, &instance, channel, engine_ref, mods_ref, None, false, reporter,
+                paths,
+                settings,
+                &instance,
+                channel,
+                engine_ref,
+                modules_ref,
+                None,
+                false,
+                reporter,
             )?;
             crate::meta::update(&instance.dir, |m| {
                 if let Binding::Managed { pin, .. } = &mut m.source {

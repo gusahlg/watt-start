@@ -2298,7 +2298,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pwc-builder"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "pwc-manifest",
  "semver",
@@ -2310,8 +2310,9 @@ dependencies = [
 
 [[package]]
 name = "pwc-instance"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
+ "dunce",
  "pwc-manifest",
  "pwc-package",
  "pwc-resolver",
@@ -2325,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "pwc-manifest"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "semver",
  "serde",
@@ -2336,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "pwc-package"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "pwc-manifest",
  "ruzstd",
@@ -2347,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "pwc-resolver"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "pwc-manifest",
  "semver",
@@ -2356,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "pwc-store"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "pwc-manifest",
  "pwc-package",
@@ -3337,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "watt-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -3360,7 +3361,7 @@ dependencies = [
 
 [[package]]
 name = "watt-start"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4104,7 +4105,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",

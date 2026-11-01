@@ -173,11 +173,19 @@ pub(super) fn set_source(
         Binding::Managed {
             channel,
             engine_ref,
-            mods_ref,
+            modules_ref,
             ..
         } => {
             let outcome = update::update_managed(
-                paths, settings, &instance, channel, engine_ref, mods_ref, None, false, reporter,
+                paths,
+                settings,
+                &instance,
+                channel,
+                engine_ref,
+                modules_ref,
+                None,
+                false,
+                reporter,
             )?;
             let pin = (outcome.new_pin, outcome.whats_new);
             (outcome.resolved, outcome.lock_report, Some(pin))

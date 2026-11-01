@@ -103,9 +103,9 @@ fn updates_card(ui: &mut egui::Ui, s: &mut watt_core::settings::Settings) -> boo
         .changed();
         changed |= widgets::switch_row(
             ui,
-            &mut s.rebuild_after_mod_change,
-            "Recompile after mod changes",
-            "Rebuild when staged mods are applied.",
+            &mut s.rebuild_after_module_change,
+            "Recompile after module changes",
+            "Rebuild when staged modules are applied.",
         )
         .changed();
         changed |= widgets::switch_row(

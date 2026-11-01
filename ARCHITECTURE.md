@@ -3,7 +3,7 @@
 watt-start is a graphical front end over the PWC package manager's library crates
 (`pwc-instance`, `pwc-builder`, `pwc-manifest`, `pwc-store`), the "launcher" phase of the package
 manager's roadmap. It adds what is too high-level for a `pwc` command: instances with their own
-game versions and branches, one-click updates of game + engine + mods, automatic rebuilds,
+game versions and branches, one-click updates of game + engine + modules, automatic rebuilds,
 rollback to earlier working builds, and a progress display you cannot miss.
 
 ```text
@@ -13,9 +13,9 @@ crates/watt-start    the binary: the egui window, plus `watt-start op ...` (head
 
 ## Ideas
 
-- **Instance**: a pwc instance (`instance.toml` = wanted mods, `pwc.lock` = resolved set, `game/` =
+- **Instance**: a pwc instance (`instance.toml` = wanted modules, `pwc.lock` = resolved set, `game/` =
   worlds and settings) plus launcher metadata (`watt-start/meta.toml`).
-- **Binding**: where an instance's game, engine and mods come from. It is the truth; the lock is
+- **Binding**: where an instance's game, engine and modules come from. It is the truth; the lock is
   derived from it and relocked whenever it drifts.
   - `managed`: follows a channel (a game branch or tag). The engine and the package manager follow
     the same-named branch when they have one, else their default branch (overridable). Pinned to
@@ -25,11 +25,11 @@ crates/watt-start    the binary: the egui window, plus `watt-start op ...` (head
     CLI is this.
 - **Snapshot**: an immutable, content-addressed checkout of exact commits, created from local
   mirrors. `sources/v1/pwc-<game12>-<engine12>/{project_watt_cubed,voxel-engine}` and
-  `sources/v1/mods-<mods12>/pwc-package-manager`. Instances pinned alike share a snapshot, and
+  `sources/v1/modules-<m12>/pwc-package-manager`. Instances pinned alike share a snapshot, and
   therefore their Cargo artifacts and Build IDs; updating one instance never touches another.
 - **Generation**: a state that built (binding, lock, executable). Rollback re-activates one; "play
   the last working build" runs one when the current state does not build.
-- **Op**: a long operation (create, mods, update, build, play, rollback, duplicate, remove,
+- **Op**: a long operation (create, modules, update, build, play, rollback, duplicate, remove,
   set-source, check-updates, maintenance), reported as a stream of events.
 
 ## State
@@ -65,7 +65,7 @@ stderr and without a cancellation hook; a child process gives streaming (the chi
 stderr with a pipe and turns every line into events, Cargo's progress bar into `Progress`, the final
 fat-LTO link into a `Link` phase), cancellation and crash isolation, without changing pwc. The same
 binary serves both sides, so the protocol cannot drift. `watt-start op --request '<json>'` is the
-form to type by hand; the GUI passes the same JSON on stdin (`--request-stdin`) so a long mod list
+form to type by hand; the GUI passes the same JSON on stdin (`--request-stdin`) so a long module list
 is not a command-line argument.
 
 On Unix the child is its own process group. Cancel sends SIGTERM, waits up to 3 seconds, then
@@ -114,7 +114,7 @@ The game and its lock guard are started with `CREATE_BREAKAWAY_FROM_JOB`. If the
 itself placed in a job that disallows breakaway, that create fails; Windows 8 and later nest jobs,
 and a parent job can refuse it. That case is not specially handled.
 
-Read-only views (catalog, status, available mods, doctor) run in the GUI process on background
+Read-only views (catalog, status, available modules, doctor) run in the GUI process on background
 threads. Small presentation edits (name, colour, group, notes) are written in-process through
 `meta::update`, which re-reads `meta.toml` under a lock so they never overwrite an op's changes.
 
@@ -163,7 +163,7 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   them. Paths that watt-core stores or compares go through `dunce`, so a Windows `\\?\` prefix
   never enters launcher state. `pwc` itself still canonicalizes with `std::fs::canonicalize`, which
   on Windows can write `\\?\` into `pwc.lock`; comparisons treat that prefix as the same path.
-  A mod spec with a separator, a leading `.`, or a `.pwcmod` suffix is a path relative to the
+  A module spec with a separator, a leading `.`, or a `.pwcmodule` suffix is a path relative to the
   instance, not the process's working directory. A bare id stays an id even when the instance
   has a directory of that name (`game/`). On Windows, drive-relative (`C:foo`) and rooted (`\foo`,
   `/foo`) specs are rejected; `C:\foo` and `\\server\share` are ordinary paths.
@@ -175,7 +175,7 @@ threads. Small presentation edits (name, colour, group, notes) are written in-pr
   `instance.toml` and `pwc.lock` it depends on already exists — a nonexistent channel, or a kill
   partway through, leaves the previous (still working) binding in place.
 - A generation's identity for rollback/recording purposes is `(environment, PWC source, binding
-  pin)`, not the environment hash alone: two managed generations can have identical game and mod
+  pin)`, not the environment hash alone: two managed generations can have identical game and module
   revisions (so equal environments) while differing only in the engine commit, which the
   environment hash does not cover. `status::compute` reports `NeedsBuild` ("the engine changed
   since the last build") in exactly that case, instead of incorrectly `Ready`.

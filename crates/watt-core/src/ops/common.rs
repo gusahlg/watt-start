@@ -1,11 +1,11 @@
-//! Helpers shared by the op implementations: phase planning, recovery suggestions, mod-spec
+//! Helpers shared by the op implementations: phase planning, recovery suggestions, module-spec
 //! parsing and generation bookkeeping.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use pwc_instance::Instance;
-use pwc_manifest::{ModManifest, ModRequirement, ModSource, PackageId, VersionReq};
+use pwc_manifest::{ModuleRequirement, ModuleSource, PackageId, PackageManifest, VersionReq};
 use pwc_package::Package;
 
 use crate::events::{Change, Phase, Recovery, Reporter};
@@ -32,7 +32,7 @@ pub(super) fn planned_phases(request: &OpRequest) -> Vec<Phase> {
             }
             phases
         }
-        OpRequest::Mods { build, .. } => {
+        OpRequest::Modules { build, .. } => {
             let mut phases = vec![Prepare, Lock];
             if build.unwrap_or(true) {
                 phases.extend(build_phases);
@@ -144,11 +144,11 @@ pub(super) fn binding_from_spec(spec: &SourceSpec) -> Binding {
         SourceSpec::Managed {
             channel,
             engine_ref,
-            mods_ref,
+            modules_ref,
         } => Binding::Managed {
             channel: channel.clone(),
             engine_ref: engine_ref.clone(),
-            mods_ref: mods_ref.clone(),
+            modules_ref: modules_ref.clone(),
             pin: None,
         },
         SourceSpec::Linked {
@@ -165,19 +165,19 @@ pub(super) fn binding_from_spec(spec: &SourceSpec) -> Binding {
     }
 }
 
-/// One parsed `pwc mod add` argument.
+/// One parsed `pwc module add` argument.
 #[derive(Debug)]
-pub(super) struct ParsedModSpec {
+pub(super) struct ParsedModuleSpec {
     /// The package id.
     pub id: PackageId,
     /// What to write into `instance.toml`.
-    pub requirement: ModRequirement,
+    pub requirement: ModuleRequirement,
 }
 
-/// Port of pwc-cli's `parse_mod_spec`: a bare id (`*`), `id@req`, a source directory (`mod.toml`)
-/// or a `.pwcmod` file. Relative paths are relative to `instance_dir`, not the process's working
+/// Port of pwc-cli's `parse_module_spec`: a bare id (`*`), `id@req`, a source directory (`module.toml`, or the older `mod.toml`)
+/// or a `.pwcmodule` (or older `.pwcmod`) file. Relative paths are relative to `instance_dir`, not the process's working
 /// directory.
-pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedModSpec> {
+pub(super) fn parse_module_spec(instance_dir: &Path, spec: &str) -> Result<ParsedModuleSpec> {
     #[cfg(windows)]
     if awkward_windows_path(spec) {
         bail!(
@@ -186,11 +186,12 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
         );
     }
     let raw = Path::new(spec);
-    // A separator, a leading `.`, or a `.pwcmod` suffix is a path. A bare id is not, even when
+    // A separator, a leading `.`, or a `.pwcmodule`/`.pwcmod` suffix is a path. A bare id is not, even when
     // the instance contains a directory of that name (`game/` is every instance's save directory).
     let path_shaped = raw.is_absolute()
         || spec.contains('/')
         || spec.contains(std::path::MAIN_SEPARATOR)
+        || spec.ends_with(".pwcmodule")
         || spec.ends_with(".pwcmod")
         || spec.starts_with('.');
     // Absolute paths stand as written. A relative path is resolved against the instance and
@@ -207,25 +208,27 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
     if let Some(resolved) = resolved {
         let resolved = crate::paths::canonical_path(&resolved).unwrap_or(resolved);
         if resolved.is_dir() {
-            let manifest =
-                ModManifest::from_file(&resolved.join("mod.toml")).with_context(|| {
-                    format!("{} is not a package source directory", resolved.display())
-                })?;
-            return Ok(ParsedModSpec {
+            // `module.toml`, or the older `mod.toml` (an error if both exist), as pwc does.
+            let manifest_path = pwc_manifest::find_manifest_file(&resolved)?
+                .unwrap_or_else(|| resolved.join(pwc_manifest::MANIFEST_FILE));
+            let manifest = PackageManifest::from_file(&manifest_path).with_context(|| {
+                format!("{} is not a package source directory", resolved.display())
+            })?;
+            return Ok(ParsedModuleSpec {
                 id: manifest.id().clone(),
-                requirement: ModRequirement {
+                requirement: ModuleRequirement {
                     version: VersionReq::STAR,
-                    source: ModSource::Path(resolved),
+                    source: ModuleSource::Path(resolved),
                 },
             });
         }
         let package = Package::from_archive_file(&resolved)
-            .with_context(|| format!("{} is not a valid .pwcmod", resolved.display()))?;
-        return Ok(ParsedModSpec {
+            .with_context(|| format!("{} is not a valid .pwcmodule", resolved.display()))?;
+        return Ok(ParsedModuleSpec {
             id: package.manifest().id().clone(),
-            requirement: ModRequirement {
+            requirement: ModuleRequirement {
                 version: VersionReq::STAR,
-                source: ModSource::File(resolved),
+                source: ModuleSource::File(resolved),
             },
         });
     }
@@ -237,18 +240,18 @@ pub(super) fn parse_mod_spec(instance_dir: &Path, spec: &str) -> Result<ParsedMo
         None => (spec, None),
     };
     let id = PackageId::parse(id).with_context(|| {
-        format!("`{spec}` is not a package id, id@requirement, source directory or .pwcmod file")
+        format!("`{spec}` is not a package id, id@requirement, source directory or .pwcmodule file")
     })?;
     let version = match req {
         Some(req) => VersionReq::parse(req)
             .with_context(|| format!("invalid version requirement `{req}`"))?,
         None => VersionReq::STAR,
     };
-    Ok(ParsedModSpec {
+    Ok(ParsedModuleSpec {
         id,
-        requirement: ModRequirement {
+        requirement: ModuleRequirement {
             version,
-            source: ModSource::Registry,
+            source: ModuleSource::Registry,
         },
     })
 }
@@ -268,7 +271,7 @@ fn awkward_windows_path(spec: &str) -> bool {
 }
 
 /// A generation's identity: `(environment, PWC source, binding pin)`. The environment hash alone
-/// is not enough — two managed generations can have identical game and mod revisions (so equal
+/// is not enough — two managed generations can have identical game and module revisions (so equal
 /// environments) while differing only in the engine commit, which the hash does not cover.
 pub(super) fn generation_identity(
     environment: &str,
@@ -308,8 +311,8 @@ pub(super) fn record_generation(
         .collect();
     let game_version = lock.pwc.version.to_string();
     let lock_text = lock.to_toml_string();
-    // The wanted mods belong to the generation too: restoring only the lock would leave an
-    // `instance.toml` that the next relock "corrects" back to the newer mod set.
+    // The wanted modules belong to the generation too: restoring only the lock would leave an
+    // `instance.toml` that the next relock "corrects" back to the newer module set.
     let manifest_path = instance_dir.join("instance.toml");
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("cannot read {}", manifest_path.display()))?;
@@ -418,15 +421,49 @@ mod tests {
     fn a_bare_id_is_not_the_instance_game_directory() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("game")).unwrap();
-        let err = parse_mod_spec(tmp.path(), "game").unwrap_err();
+        let err = parse_module_spec(tmp.path(), "game").unwrap_err();
         let text = format!("{err:#}");
         assert!(
             !text.contains("package source"),
-            "game/ was treated as a mod path: {text}"
+            "game/ was treated as a module path: {text}"
         );
-        let parsed = parse_mod_spec(tmp.path(), "demo.blocks").unwrap();
-        assert!(matches!(parsed.requirement.source, ModSource::Registry));
+        let parsed = parse_module_spec(tmp.path(), "demo.blocks").unwrap();
+        assert!(matches!(parsed.requirement.source, ModuleSource::Registry));
         assert_eq!(parsed.id.as_str(), "demo.blocks");
+    }
+
+    fn write_manifest(dir: &Path, file: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(file),
+            "format = 1\n\n[package]\nid = \"demo.blocks\"\nname = \"Demo\"\nversion = \"1.0.0\"\n\
+             description = \"d\"\nauthors = [\"T\"]\nlicense = \"AGPL-3.0-or-later\"\n\
+             license-files = [\"LICENSE\"]\nkind = \"module\"\npwc-api = \"^1.0\"\n",
+        )
+        .unwrap();
+    }
+
+    /// Source directories hold `module.toml`, or the older `mod.toml`; both parse.
+    #[test]
+    fn source_directories_accept_either_manifest_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(&tmp.path().join("new"), "module.toml");
+        write_manifest(&tmp.path().join("old"), "mod.toml");
+        for dir in ["new", "old"] {
+            let parsed = parse_module_spec(tmp.path(), &format!("./{dir}")).unwrap();
+            assert_eq!(parsed.id.as_str(), "demo.blocks");
+            assert!(matches!(parsed.requirement.source, ModuleSource::Path(_)));
+        }
+    }
+
+    /// `.pwcmodule` and the older `.pwcmod` are file paths, not package ids.
+    #[test]
+    fn both_archive_suffixes_are_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a.pwcmodule", "a.pwcmod"] {
+            let err = parse_module_spec(tmp.path(), name).unwrap_err();
+            assert!(format!("{err:#}").contains("no such file"), "{name}");
+        }
     }
 
     /// A relative path is resolved against the instance, including when the working directory
@@ -434,7 +471,7 @@ mod tests {
     #[test]
     fn a_missing_relative_path_is_not_a_package_id() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = parse_mod_spec(tmp.path(), "mods/example").unwrap_err();
+        let err = parse_module_spec(tmp.path(), "modules/example").unwrap_err();
         let text = format!("{err:#}");
         assert!(
             text.contains("no such file"),

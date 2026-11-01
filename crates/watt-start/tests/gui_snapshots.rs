@@ -59,12 +59,12 @@ fn instance_overview_updates_available() {
 }
 
 #[test]
-fn mods_tab_with_staged_changes() {
+fn modules_tab_with_staged_changes() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.stage_mod_add_for_tests("survival", "pwc.better-caves");
-    app.stage_mod_remove_for_tests("survival", "pwc.waypoints");
-    shot("mods_staged", app);
+    app.show_instance_modules("survival");
+    app.stage_module_add_for_tests("survival", "pwc.better-caves");
+    app.stage_module_remove_for_tests("survival", "pwc.waypoints");
+    shot("modules_staged", app);
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn sidebar_pending_create() {
             color: None,
             group: None,
             source: watt_core::ops::SourceSpec::PwcDefault,
-            mods: Vec::new(),
+            modules: Vec::new(),
             build: false,
         },
     );
@@ -277,56 +277,56 @@ fn instance_overview_small() {
     shot_at("instance_overview_small", egui::vec2(900.0, 600.0), app);
 }
 
-// ---- mods ----
+// ---- modules ----
 
 #[test]
-fn mods_installed() {
+fn modules_installed() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    shot("mods_installed", app);
+    app.show_instance_modules("survival");
+    shot("modules_installed", app);
 }
 
 #[test]
-fn mods_browse() {
+fn modules_browse() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.mods_show_browse_for_tests("survival");
-    shot("mods_browse", app);
+    app.show_instance_modules("survival");
+    app.modules_show_browse_for_tests("survival");
+    shot("modules_browse", app);
 }
 
 #[test]
-fn mods_many() {
+fn modules_many() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.stage_mod_remove_for_tests("modded", "pwc.ambient-audio");
-    app.stage_mod_add_for_tests("modded", "pwc.recipe-book");
-    shot("mods_many", app);
+    app.show_instance_modules("modded");
+    app.stage_module_remove_for_tests("modded", "pwc.ambient-audio");
+    app.stage_module_add_for_tests("modded", "pwc.recipe-book");
+    shot("modules_many", app);
 }
 
 #[test]
-fn mods_many_browse_filtered() {
+fn modules_many_browse_filtered() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_show_browse_for_tests("modded");
-    app.mods_set_search_for_tests("modded", "ore");
-    shot("mods_many_browse_filtered", app);
+    app.show_instance_modules("modded");
+    app.modules_show_browse_for_tests("modded");
+    app.modules_set_search_for_tests("modded", "ore");
+    shot("modules_many_browse_filtered", app);
 }
 
 #[test]
-fn mods_empty() {
+fn modules_empty() {
     let mut app = gui::App::for_snapshot_tests();
-    let Some(name) = app.mods_empty_instance_for_tests() else {
+    let Some(name) = app.modules_empty_instance_for_tests() else {
         return;
     };
-    app.show_instance_mods(&name);
-    shot("mods_empty", app);
+    app.show_instance_modules(&name);
+    shot("modules_empty", app);
 }
 
 #[test]
-fn mods_narrow() {
+fn modules_narrow() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    shot_at("mods_narrow", egui::vec2(900.0, 600.0), app);
+    app.show_instance_modules("survival");
+    shot_at("modules_narrow", egui::vec2(900.0, 600.0), app);
 }
 
 // ---- dialogs ----
@@ -471,12 +471,16 @@ fn overview_900_scale_150() {
 }
 
 #[test]
-fn mods_pending_900_scale_150() {
+fn modules_pending_900_scale_150() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.stage_mod_add_for_tests("survival", "pwc.better-caves");
+    app.show_instance_modules("survival");
+    app.stage_module_add_for_tests("survival", "pwc.better-caves");
     app.set_scale_for_tests(1.5);
-    shot_at("mods_pending_900_scale_150", egui::vec2(900.0, 600.0), app);
+    shot_at(
+        "modules_pending_900_scale_150",
+        egui::vec2(900.0, 600.0),
+        app,
+    );
 }
 
 // ---- update ----
@@ -502,92 +506,92 @@ fn settings_about_card() {
     shot_at("settings_about_card", egui::vec2(1280.0, 1900.0), app);
 }
 
-// ---- mods v2 ----
+// ---- modules v2 ----
 
 #[test]
-fn mods_impact() {
+fn modules_impact() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.stage_mod_add_for_tests("modded", "pwc.rivers");
-    app.stage_mod_remove_for_tests("modded", "pwc.soundscape");
-    app.stage_mod_remove_for_tests("modded", "pwc.ambient-audio");
-    app.mods_open_impact_for_tests("modded");
-    shot("mods_impact", app);
+    app.show_instance_modules("modded");
+    app.stage_module_add_for_tests("modded", "pwc.rivers");
+    app.stage_module_remove_for_tests("modded", "pwc.soundscape");
+    app.stage_module_remove_for_tests("modded", "pwc.ambient-audio");
+    app.modules_open_impact_for_tests("modded");
+    shot("modules_impact", app);
 }
 
 #[test]
-fn mods_browse_compat() {
+fn modules_browse_compat() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_show_browse_for_tests("modded");
-    app.mods_set_search_for_tests("modded", "rail");
-    shot("mods_browse_compat", app);
+    app.show_instance_modules("modded");
+    app.modules_show_browse_for_tests("modded");
+    app.modules_set_search_for_tests("modded", "rail");
+    shot("modules_browse_compat", app);
 }
 
 #[test]
-fn mods_details() {
+fn modules_details() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.mods_select_for_tests("survival", "pwc.essentials", false);
-    shot("mods_details", app);
+    app.show_instance_modules("survival");
+    app.modules_select_for_tests("survival", "pwc.essentials", false);
+    shot("modules_details", app);
 }
 
-/// Details for a catalogue mod this instance's Mod API cannot take.
+/// Details for a catalogue module this instance's Module API cannot take.
 #[test]
-fn mods_details_compat() {
+fn modules_details_compat() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_show_browse_for_tests("modded");
-    app.mods_set_search_for_tests("modded", "rail");
-    app.mods_select_for_tests("modded", "pwc.rail-network", false);
-    shot("mods_details_compat", app);
+    app.show_instance_modules("modded");
+    app.modules_show_browse_for_tests("modded");
+    app.modules_set_search_for_tests("modded", "rail");
+    app.modules_select_for_tests("modded", "pwc.rail-network", false);
+    shot("modules_details_compat", app);
 }
 
-/// Details for an installed mod with a newer catalogue version: Update and the version picker.
+/// Details for an installed module with a newer catalogue version: Update and the version picker.
 #[test]
-fn mods_details_update() {
+fn modules_details_update() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_select_for_tests("modded", "pwc.backpacks", false);
-    shot("mods_details_update", app);
+    app.show_instance_modules("modded");
+    app.modules_select_for_tests("modded", "pwc.backpacks", false);
+    shot("modules_details_update", app);
 }
 
 /// Details for a bundle member: Remove is blocked and says why; "In bundle" links back.
 #[test]
-fn mods_details_member() {
+fn modules_details_member() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_select_for_tests("modded", "pwc.trail-map", false);
-    shot("mods_details_member", app);
+    app.show_instance_modules("modded");
+    app.modules_select_for_tests("modded", "pwc.trail-map", false);
+    shot("modules_details_member", app);
 }
 
 #[test]
-fn mods_details_narrow() {
+fn modules_details_narrow() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.mods_select_for_tests("survival", "pwc.essentials", true);
-    shot_at("mods_details_narrow", egui::vec2(900.0, 600.0), app);
+    app.show_instance_modules("survival");
+    app.modules_select_for_tests("survival", "pwc.essentials", true);
+    shot_at("modules_details_narrow", egui::vec2(900.0, 600.0), app);
 }
 
 /// Backpacks shows its ↑ pill; Minimap is staged ("Will update"), so the bar counts one update.
 #[test]
-fn mods_updates() {
+fn modules_updates() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
-    app.mods_stage_update_for_tests("modded", "pwc.minimap");
-    shot_at("mods_updates", egui::vec2(1280.0, 1120.0), app);
+    app.show_instance_modules("modded");
+    app.modules_stage_update_for_tests("modded", "pwc.minimap");
+    shot_at("modules_updates", egui::vec2(1280.0, 1120.0), app);
 }
 
-/// "Update all (2)" stages a newest-version relock for both outdated mods.
+/// "Update all (2)" stages a newest-version relock for both outdated modules.
 #[test]
-fn mods_update_all_stages_both() {
+fn modules_update_all_stages_both() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("modded");
+    app.show_instance_modules("modded");
     let mut harness = app_harness(app);
     harness.run_steps(3);
     harness.get_by_label("Update all (2)").click();
     harness.run();
-    let mut staged = harness.state().mods_staged_update_for_tests("modded");
+    let mut staged = harness.state().modules_staged_update_for_tests("modded");
     staged.sort();
     assert_eq!(
         staged,
@@ -596,18 +600,18 @@ fn mods_update_all_stages_both() {
 }
 
 #[test]
-fn mods_apply_split() {
+fn modules_apply_split() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.stage_mod_add_for_tests("survival", "pwc.better-caves");
-    shot("mods_apply_split", app);
+    app.show_instance_modules("survival");
+    app.stage_module_add_for_tests("survival", "pwc.better-caves");
+    shot("modules_apply_split", app);
 }
 
-/// ↓ selects the first installed row, then Delete stages that mod for removal.
+/// ↓ selects the first installed row, then Delete stages that module for removal.
 #[test]
-fn mods_key_down_delete_stages_remove() {
+fn modules_key_down_delete_stages_remove() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
+    app.show_instance_modules("survival");
     let mut harness = app_harness(app);
     harness.run_steps(3);
     harness.key_press(egui::Key::ArrowDown);
@@ -615,52 +619,52 @@ fn mods_key_down_delete_stages_remove() {
     harness.key_press(egui::Key::Delete);
     harness.run();
     assert_eq!(
-        harness.state().mods_staged_remove_for_tests("survival"),
+        harness.state().modules_staged_remove_for_tests("survival"),
         vec!["pwc.essentials".to_owned()]
     );
 }
 
-/// `/` moves focus to the mods search field.
+/// `/` moves focus to the modules search field.
 #[test]
-fn mods_slash_focuses_search() {
+fn modules_slash_focuses_search() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
+    app.show_instance_modules("survival");
     let mut harness = app_harness(app);
     harness.run_steps(3);
     harness.key_press(egui::Key::Slash);
     harness.run();
     assert!(
-        harness.get_by_label("Search mods").is_focused(),
-        "slash did not focus the mods search"
+        harness.get_by_label("Search modules").is_focused(),
+        "slash did not focus the modules search"
     );
 }
 
-/// Escape clears the selected mod.
+/// Escape clears the selected module.
 #[test]
-fn mods_escape_clears_selection() {
+fn modules_escape_clears_selection() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.mods_select_for_tests("survival", "pwc.essentials", false);
+    app.show_instance_modules("survival");
+    app.modules_select_for_tests("survival", "pwc.essentials", false);
     let mut harness = app_harness(app);
     harness.run_steps(3);
     assert_eq!(
         harness
             .state()
-            .mods_selected_for_tests("survival")
+            .modules_selected_for_tests("survival")
             .as_deref(),
         Some("pwc.essentials")
     );
     harness.key_press(egui::Key::Escape);
     harness.run();
-    assert_eq!(harness.state().mods_selected_for_tests("survival"), None);
+    assert_eq!(harness.state().modules_selected_for_tests("survival"), None);
 }
 
-/// With a mod selected, Enter belongs to the row (details), not to Play.
+/// With a module selected, Enter belongs to the row (details), not to Play.
 #[test]
-fn mods_enter_with_selection_does_not_play() {
+fn modules_enter_with_selection_does_not_play() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
-    app.mods_select_for_tests("survival", "pwc.essentials", false);
+    app.show_instance_modules("survival");
+    app.modules_select_for_tests("survival", "pwc.essentials", false);
     let mut harness = app_harness(app);
     harness.run_steps(3);
     harness.key_press(egui::Key::Enter);
@@ -668,11 +672,11 @@ fn mods_enter_with_selection_does_not_play() {
     assert!(!harness.state().has_play_op_for_tests("survival"));
 }
 
-/// Without a selection the Mods tab leaves Enter to Play.
+/// Without a selection the Modules tab leaves Enter to Play.
 #[test]
-fn mods_enter_without_selection_plays() {
+fn modules_enter_without_selection_plays() {
     let mut app = gui::App::for_snapshot_tests();
-    app.show_instance_mods("survival");
+    app.show_instance_modules("survival");
     let mut harness = app_harness(app);
     harness.run_steps(3);
     harness.key_press(egui::Key::Enter);

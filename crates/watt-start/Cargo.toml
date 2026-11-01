@@ -1,6 +1,6 @@
 [package]
 name = "watt-start"
-description = "Project Watt Cubed launcher: instances, mods, one-click updates and builds."
+description = "Project Watt Cubed launcher: instances, modules, one-click updates and builds."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
